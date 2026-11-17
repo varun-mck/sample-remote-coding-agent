@@ -125,10 +125,21 @@ TOOLS: tuple[ToolSpec, ...] = (
 )
 
 
+def _endpoint_line(api: ApiClient) -> str:
+    """The `endpoint used:` suffix for one answer, or `""` when there is nothing to report."""
+    report = getattr(api, "provenance", None)
+    return fmt.endpoint_provenance(*report()) if report is not None else ""
+
+
 def call_tool(client: ApiClient, name: str, arguments: Mapping[str, Any]) -> str:
     for spec in TOOLS:
         if spec.name == name:
-            return spec.run(client, arguments)
+            try:
+                answer = spec.run(client, arguments)
+            except (RcaError, ValueError) as err:
+                answer = f"Error: {err}"
+            provenance = _endpoint_line(client)
+            return f"{answer}\n{provenance}" if provenance else answer
     raise ValueError(f"unknown tool {name!r}")
 
 
@@ -146,7 +157,7 @@ def build_server(client: ApiClient) -> Server:
     async def tool_handler(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
             text = call_tool(client, name, arguments or {})
-        except (ValueError, RcaError) as exc:
+        except ValueError as exc:
             text = str(exc)
         return [TextContent(type="text", text=text)]
 
