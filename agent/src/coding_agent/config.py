@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from claude_agent_sdk import EffortLevel
 
@@ -106,12 +107,9 @@ ROLES: Mapping[str, RoleConfig] = {
     "review": RoleConfig(model="opus", effort="low", turns=40),
 }
 
-# The two skills the image bakes in, by name. `skills="all"` is valid at the top level of
-# `ClaudeAgentOptions` but NOT inside an `AgentDefinition`, which takes an explicit list,
-# so the fan-out implementer has to name them. A constant rather than a directory listing
-# because `subagents.build_options` is pure and must stay that way; `tests/test_skills.py`
-# is what asserts this matches the directories actually under `agent/skills/skills/`.
-EMBEDDED_SKILLS: tuple[str, ...] = ("repo-conventions", "review-rigor")
+DEFAULT_BUNDLE_ROOT = "/app/aipdlc"
+DEFAULT_ENTRY_COMMAND = "deliver"
+DEFAULT_BUNDLE_PLUGIN = "aipdlc"
 
 # Ordered worst-to-best, so "configured below its default" is a comparison and not a
 # table of special cases.
@@ -120,43 +118,25 @@ _EFFORT_ORDER: tuple[EffortLevel, ...] = ("low", "medium", "high", "xhigh", "max
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Everything the graph needs that is not on the state."""
+    """Fleet defaults for the harness loop."""
 
     model: str
-    roles: Mapping[str, RoleConfig]
     work_root: Path
     venv_root: Path
-    # Every plugin root handed to every role. The image must copy the plugin root to
-    # `/app/skills` and set `ENV AGENT_SKILL_PATHS=/app/skills`; `agent/Dockerfile` does
-    # exactly that pair -- `COPY skills /app/skills` (its build context is `agent/`, so no
-    # `agent/` prefix) followed by `ENV AGENT_SKILL_PATHS=/app/skills`.
-    skill_paths: tuple[Path, ...]
-    # One fleet-wide fallback, handed to every role session. With per-role models a model
-    # that is momentarily unavailable should DEGRADE THE RUN RATHER THAN KILL IT, and both
-    # the model and its fallback are Bedrock values, so a misconfiguration here is a wrong
-    # model and never a call to a vendor endpoint. One value rather than a per-role one:
-    # a per-role fallback is a second routing table, and two routing tables disagree.
+    bundle_paths: tuple[Path, ...]
+    bundle_plugin_name: str
+    entry_command: str
     fallback_model: str | None
-    # Whether the coding role's session carries the goal condition in its system prompt.
-    # A switch and not a constant because a standing objective is the one instruction that
-    # competes with the specification the role was handed, so an operator has to be able to
-    # take it away for a run without editing code. See `nodes/code.py`.
-    goal_enabled: bool
+    max_turns: int
+    effort: EffortLevel
 
 
-def skill_paths() -> tuple[Path, ...]:
-    """The Agent Skills plugin roots, from `AGENT_SKILL_PATHS` or the in-tree copy.
-
-    Colon-separated, like `PATH`. The fallback is `agent/skills` resolved from
-    `__file__`, so a local run gets the same two skills the image bakes in with no
-    environment set at all.
-    """
-    configured = os.environ.get("AGENT_SKILL_PATHS", "").strip()
+def bundle_paths() -> tuple[Path, ...]:
+    configured = os.environ.get("AIPDLC_BUNDLE_PATH", "").strip()
     if configured:
         return tuple(Path(part) for part in configured.split(":") if part)
-    # .../agent/src/coding_agent/config.py -> .../agent/skills
-    in_tree = Path(__file__).resolve().parents[2] / "skills"
-    return (in_tree,) if in_tree.is_dir() else ()
+    in_tree = Path(__file__).resolve().parents[2] / "aipdlc"
+    return (in_tree,) if in_tree.is_dir() else (Path(DEFAULT_BUNDLE_ROOT),)
 
 
 def _role_config(role: str, default: RoleConfig) -> RoleConfig:
@@ -174,7 +154,7 @@ def _role_config(role: str, default: RoleConfig) -> RoleConfig:
     effort: EffortLevel = default.effort
     configured_effort = os.environ.get(f"{prefix}EFFORT")
     if configured_effort in _EFFORT_ORDER:
-        effort = configured_effort  # type: ignore[assignment]
+        effort = cast(EffortLevel, configured_effort)
         if _EFFORT_ORDER.index(effort) < _EFFORT_ORDER.index(default.effort):
             log.warning(
                 "role %s is configured at effort %s, below its default %s; at medium "
@@ -226,19 +206,25 @@ def load_config() -> AgentConfig:
     # moment the primary model becomes unavailable -- which is the one moment nobody is
     # watching, and the one moment the fallback is the whole run.
     fallback_model = validate_model(os.environ.get("ANTHROPIC_FALLBACK_MODEL", "sonnet"))
-    goal_enabled = _env_flag("CODE_GOAL_ENABLED", default=True)
-    # No warning about `ANTHROPIC_DEFAULT_HAIKU_MODEL` here any more: it was justified by
-    # `/goal`'s condition evaluator being a separate small-fast-model call after every
-    # turn, and `nodes/code.py` no longer sends a slash command -- the condition rides in
-    # the coding role's system prompt, so the switch costs no background model call at all.
-    # The variable is still forwarded and still cleared in the tests, for routing.
+    entry = (
+        os.environ.get("AIPDLC_ENTRY_COMMAND", DEFAULT_ENTRY_COMMAND).strip()
+        or DEFAULT_ENTRY_COMMAND
+    )
+    plugin = (
+        os.environ.get("AIPDLC_PLUGIN_NAME", DEFAULT_BUNDLE_PLUGIN).strip() or DEFAULT_BUNDLE_PLUGIN
+    )
+    turns = int(os.environ.get("AIPDLC_MAX_TURNS", "200"))
+    configured_effort = os.environ.get("AIPDLC_EFFORT", "high")
+    effort: EffortLevel = configured_effort if configured_effort in _EFFORT_ORDER else "high"
 
     return AgentConfig(
         model=fleet_model,
-        roles={role: _role_config(role, default) for role, default in ROLES.items()},
         work_root=Path(os.environ.get("WORK_ROOT", _DEFAULT_WORK_ROOT)),
         venv_root=Path(os.environ.get("VENV_ROOT", _DEFAULT_VENV_ROOT)),
-        skill_paths=skill_paths(),
+        bundle_paths=bundle_paths(),
+        bundle_plugin_name=plugin,
+        entry_command=entry,
         fallback_model=fallback_model,
-        goal_enabled=goal_enabled,
+        max_turns=turns,
+        effort=effort,
     )

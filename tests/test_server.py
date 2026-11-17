@@ -1,4 +1,4 @@
-"""The one thing this file pins is invariant 1: the graph never runs on the invocation thread.
+"""The one thing this file pins is invariant 1: the harness never runs on the invocation thread.
 
 AgentCore serves its health ping on the thread the entrypoint returns to. An entrypoint
 that awaited a multi-hour graph blocks that ping, the runtime stops seeing `HealthyBusy`,
@@ -111,7 +111,7 @@ class _StoreRecorder:
 
 
 def test_the_entrypoint_returns_before_the_graph_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Invariant 1: `invoke` returns while the graph is still running, on a thread of its own."""
+    """Invariant 1: `invoke` returns while the harness is still running, on a thread of its own."""
     no_aws(monkeypatch)
     task_id = "task-handoff"
     entered = threading.Event()
@@ -120,11 +120,11 @@ def test_the_entrypoint_returns_before_the_graph_finishes(monkeypatch: pytest.Mo
 
     async def blocked_run_task(payload: dict[str, Any]) -> dict[str, Any]:
         entered.set()
-        assert release.wait(timeout=_TIMEOUT), "the test never released the graph"
+        assert release.wait(timeout=_TIMEOUT), "the test never released the harness"
         finished.set()
         return {}
 
-    monkeypatch.setattr(server.graph, "run_task", blocked_run_task)
+    monkeypatch.setattr(server.harness, "run_task", blocked_run_task)
     before = set(threading.enumerate())
     started: list[threading.Thread] = []
 
@@ -132,8 +132,8 @@ def test_the_entrypoint_returns_before_the_graph_finishes(monkeypatch: pytest.Mo
         accepted = server.invoke(_payload(task_id))
         assert accepted == {"status": "accepted", "taskId": task_id}
         assert entered.wait(timeout=_TIMEOUT)
-        # `release` is still clear and only the graph sets `finished`, after waiting on it.
-        # So the entrypoint returned with the graph demonstrably still mid-run.
+        # `release` is still clear and only the harness sets `finished`, after waiting on it.
+        # So the entrypoint returned with the harness demonstrably still mid-run.
         assert not finished.is_set()
 
         started = _new_threads(before)
@@ -155,7 +155,7 @@ def test_the_entrypoint_returns_before_the_graph_finishes(monkeypatch: pytest.Mo
 def test_the_async_task_is_registered_before_the_thread_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`add_async_task` happens before the graph's first instruction: no window where the graph runs and the runtime believes the container is idle."""
+    """`add_async_task` happens before the harness's first instruction: no window where the harness runs and the runtime believes the container is idle."""
     no_aws(monkeypatch)
     task_id = "task-order"
     recorder = _AppRecorder()
@@ -165,7 +165,7 @@ def test_the_async_task_is_registered_before_the_thread_starts(
         recorder.events.append("graph")
         return {}
 
-    monkeypatch.setattr(server.graph, "run_task", recorded_run_task)
+    monkeypatch.setattr(server.harness, "run_task", recorded_run_task)
     before = set(threading.enumerate())
 
     try:
@@ -201,7 +201,7 @@ def test_every_exit_path_completes_the_async_task(
             raise RuntimeError("the clone failed")
         return {"taskId": payload["taskId"]}
 
-    monkeypatch.setattr(server.graph, "run_task", maybe_crashing_run_task)
+    monkeypatch.setattr(server.harness, "run_task", maybe_crashing_run_task)
     before = set(threading.enumerate())
 
     try:
@@ -230,7 +230,7 @@ def test_a_crash_is_recorded_as_a_failed_status(monkeypatch: pytest.MonkeyPatch)
     async def failing_run_task(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(message)
 
-    monkeypatch.setattr(server.graph, "run_task", failing_run_task)
+    monkeypatch.setattr(server.harness, "run_task", failing_run_task)
     before = set(threading.enumerate())
 
     try:
@@ -258,9 +258,9 @@ def test_an_incomplete_payload_is_rejected_before_any_thread_starts(
     recorder.install(monkeypatch)
 
     async def forbidden_run_task(payload: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("the graph must not run for an invalid payload")
+        raise AssertionError("the harness must not run for an invalid payload")
 
-    monkeypatch.setattr(server.graph, "run_task", forbidden_run_task)
+    monkeypatch.setattr(server.harness, "run_task", forbidden_run_task)
 
     payload = _payload("task-invalid")
     if value is None:

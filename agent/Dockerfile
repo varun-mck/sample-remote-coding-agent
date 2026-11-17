@@ -37,7 +37,6 @@ FROM --platform=linux/arm64 public.ecr.aws/docker/library/python:3.13-slim-bookw
 # a registry fetch at task time -- or, offline, into a tool that silently does not appear.
 # `test_the_agent_image_installs_the_pinned_aws_documentation_server` asserts the pair.
 ARG CLAUDE_CODE_VERSION=2.0.76
-ARG AWS_DOCS_MCP_VERSION=1.1.30
 ARG UV_VERSION=0.9.2
 
 ENV PYTHONUNBUFFERED=1
@@ -68,22 +67,6 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && claude --version
 
-# The AWS documentation MCP server, INSTALLED AT BUILD TIME at a pinned version (invariant 34
-# and invariant 10b, documentation tools only). `uvx` at run time then resolves what is already
-# here; it must not be the thing that goes and gets a version. `uv` itself comes from PyPI at
-# an exact version rather than from a third container image, so there is one fewer registry
-# reference to keep pinned. The cache is world-readable because the run-time `uvx` may not be
-# the user that built it.
-#
-# `UV_OFFLINE` is deliberately NOT set: `subagents.py` documents a missing documentation
-# server as an absent tool and never an error, and an offline hard failure would turn a cache
-# miss into exactly the error that contract rules out.
-ENV UV_CACHE_DIR=/opt/uv-cache
-RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
- && UV_TOOL_BIN_DIR=/usr/local/bin \
-    uv tool install "awslabs.aws-documentation-mcp-server==${AWS_DOCS_MCP_VERSION}" \
- && chmod -R a+rX "${UV_CACHE_DIR}"
-
 # The agent itself. Manifest before source, so editing a module does not re-resolve five
 # dependencies. Bounds on all of them are `agent/pyproject.toml`'s job and invariant 29's
 # test already reads that file.
@@ -92,13 +75,8 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-# The two Agent Skills as ONE plugin root. `config.skill_paths()` reads `AGENT_SKILL_PATHS`
-# and falls back to the in-tree `agent/skills`; that directory itself contains
-# `skills/<name>/SKILL.md`, and the nesting IS the plugin-root layout `tests/test_skills.py`
-# pins -- so copy the root, not its contents. Copying the contents flattens it and both
-# skills then silently never load, because the CLI reports a missing skill as nothing at all.
-COPY skills /app/skills
-ENV AGENT_SKILL_PATHS=/app/skills
+COPY aipdlc /app/aipdlc
+ENV AIPDLC_BUNDLE_PATH=/app/aipdlc
 
 # THREE THINGS THIS FILE DELIBERATELY DOES NOT DO.
 #

@@ -99,7 +99,9 @@ def test_the_handlers_pin_a_published_version_in_the_same_stack(tmp_path: Path) 
         stack, app_name="rca", profile_id="apac.guardrail.v1:0"
     )
 
-    environment = stack.resolve(api_stack._common_environment(data, built))
+    environment = stack.resolve(
+        api_stack._common_environment(data, built, agent_runtime_arn="arn:test:runtime")
+    )
     (version_id,) = Template.from_stack(stack).find_resources("AWS::Bedrock::GuardrailVersion")
     assert environment["GUARDRAIL_VERSION"] == {"Fn::GetAtt": [version_id, "Version"]}, (
         "a local GetAtt on the published version: never DRAFT, never an ImportValue"
@@ -135,7 +137,7 @@ def test_a_deploy_with_the_guardrail_off_sends_both_keys_empty(tmp_path: Path) -
         app_name="rca",
         env=aws_cdk.Environment(account=_ACCOUNT, region="ap-southeast-1"),
     )
-    environment = api_stack._common_environment(data, None)
+    environment = api_stack._common_environment(data, None, agent_runtime_arn="arn:test:runtime")
     assert environment["GUARDRAIL_ID"] == "" and environment["GUARDRAIL_VERSION"] == ""
 
 

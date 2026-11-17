@@ -95,10 +95,10 @@ def test_the_only_egress_the_agent_security_group_allows_is_443(template: Templa
     or a widened one, is invisible in a deploy log.
 
     The group is selected by its `GroupDescription` and never as "the only one": each of the
-    six interface endpoints gets a security group of its own, so the template carries seven.
+    seven interface endpoints each get a security group of their own, so the template carries eight.
     """
     groups = _properties(template, "AWS::EC2::SecurityGroup")
-    assert len(groups) == 6, (
+    assert len(groups) == 7, (
         f"{len(groups)} security groups: the interface endpoints bring their own, so a "
         f"test that assumes one silently asserts against an endpoint's group instead"
     )
@@ -137,7 +137,7 @@ def test_every_aws_call_that_carries_content_has_a_vpc_endpoint(template: Templa
     # already covers, and AgentCore Identity's own Secrets Manager write happens service-side
     # from a control-plane Lambda outside this VPC -- so an endpoint for it would be an ENI in
     # every AZ with no client.
-    template.resource_count_is("AWS::EC2::VPCEndpoint", 7)
+    template.resource_count_is("AWS::EC2::VPCEndpoint", 8)
     endpoints = _properties(template, "AWS::EC2::VPCEndpoint")
     names = [_service_name(endpoint["ServiceName"]) for endpoint in endpoints]
     for suffix in (
@@ -150,6 +150,7 @@ def test_every_aws_call_that_carries_content_has_a_vpc_endpoint(template: Templa
         # Lambdas are deliberately not in this VPC, and `.bedrock-agentcore.gateway` is a
         # third service -- so a test that matched either would pass on the wrong endpoint.
         ".bedrock-agentcore",
+        ".bedrock-agentcore.gateway",
     ):
         assert any(name.endswith(suffix) for name in names), f"no endpoint for {suffix}: {names}"
     # Gateway endpoints, and free: an ECR layer *is* an S3 object, which is why S3 is here.

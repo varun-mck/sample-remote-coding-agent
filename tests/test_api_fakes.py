@@ -42,14 +42,9 @@ _REGION = "ap-southeast-1"
 _HANDLER_MODULES = (
     "_common",
     "observability",
-    "github_app",
     "runs",
-    "provisioner",
-    "configurations",
-    "cards",
     "tasks",
     "dispatcher",
-    "watchdog",
 )
 
 
@@ -177,6 +172,10 @@ class FakeAgentCore:
         self.errors: dict[str, list[BaseException]] = {
             k: list(v) for k, v in (errors or {}).items()
         }
+
+    @property
+    def invoke_calls(self) -> list[dict[str, Any]]:
+        return [arguments for name, arguments in self.calls if name == "InvokeAgentRuntime"]
 
     # -- introspection helpers a test asserts against -----------------------------
 

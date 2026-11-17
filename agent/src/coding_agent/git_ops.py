@@ -85,7 +85,7 @@ _GIT_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG")
 # anything widens the directory's mode.
 _ASKPASS_SCRIPT = """#!/bin/sh
 case "$1" in
-  Username*) printf '%s' 'x-access-token' ;;
+  Username*) cat "$(dirname "$0")/username" ;;
   *) cat "$(dirname "$0")/token" ;;
 esac
 """
@@ -423,7 +423,15 @@ def commit(repo: Path, message: str) -> str:
     return out.strip()
 
 
-def push(repo: Path, branch: str, *, token: str, repository: str) -> None:
+def push(
+    repo: Path,
+    branch: str,
+    *,
+    token: str,
+    repository: str,
+    host: str = "github.com",
+    username: str = "x-access-token",
+) -> None:
     """Push the working commit to `refs/heads/<branch>` on `origin`.
 
     `repository` (`owner/repo`) is what the remote URL is built from when the clone has
@@ -433,7 +441,7 @@ def push(repo: Path, branch: str, *, token: str, repository: str) -> None:
     (invariant 4). Authentication goes through `GIT_ASKPASS` instead.
     """
     code, out, _ = _git(["remote", "get-url", "origin"], cwd=repo, check=False)
-    url = f"https://github.com/{repository}.git"
+    url = f"https://{host}/{repository}.git"
     if code != 0:
         _git(["remote", "add", "origin", url], cwd=repo)
     elif _is_local(out.strip()):
@@ -442,11 +450,12 @@ def push(repo: Path, branch: str, *, token: str, repository: str) -> None:
         ["push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"],
         cwd=repo,
         token=token,
+        username=username,
     )
 
 
 @contextlib.contextmanager
-def _askpass(token: str) -> Iterator[Path]:
+def _askpass(token: str, *, username: str = "x-access-token") -> Iterator[Path]:
     """Yield the path of a throwaway `GIT_ASKPASS` script that prints `token`.
 
     A 0700 directory holding a 0600 `token` file and the script that cats it, removed
@@ -460,6 +469,9 @@ def _askpass(token: str) -> Iterator[Path]:
         token_file = tmp / "token"
         token_file.write_text(token, encoding="utf-8")
         token_file.chmod(0o600)
+        user_file = tmp / "username"
+        user_file.write_text(username, encoding="utf-8")
+        user_file.chmod(0o600)
         script = tmp / "askpass.sh"
         script.write_text(_ASKPASS_SCRIPT, encoding="utf-8")
         script.chmod(0o700)
@@ -473,7 +485,9 @@ def _base_env_for_git() -> dict[str, str]:
     return {name: os.environ[name] for name in _GIT_ENV_PASSTHROUGH if name in os.environ}
 
 
-def _run_authenticated(args: Sequence[str], *, cwd: Path, token: str | None) -> None:
+def _run_authenticated(
+    args: Sequence[str], *, cwd: Path, token: str | None, username: str = "x-access-token"
+) -> None:
     """Run a network git command with credentials supplied out of band.
 
     The environment is built from nothing rather than copied, so the token is the only
@@ -488,6 +502,6 @@ def _run_authenticated(args: Sequence[str], *, cwd: Path, token: str | None) -> 
         # passes on whatever token it was given, including none.
         _git(list(args), cwd=cwd, env=env)
         return
-    with _askpass(token) as script:
+    with _askpass(token, username=username) as script:
         env["GIT_ASKPASS"] = str(script)
         _git(list(args), cwd=cwd, env=env)

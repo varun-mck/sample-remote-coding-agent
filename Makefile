@@ -11,7 +11,7 @@
 # PYTHON prefers the venv so `make test` works whether or not it is activated.
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-.PHONY: setup test lint preflight deploy
+.PHONY: setup test lint preflight deploy budget-reset
 
 # Idempotent: cheap on an already-prepared tree, which is what every verified run
 # assumes. Keyed on pip rather than the interpreter because a `uv venv` has
@@ -88,15 +88,6 @@ OXLINT ?= npx --yes oxlint@$(OXLINT_VERSION)
 lint:
 	$(PYTHON) -m ruff check agent/src api/src infra mcp/src tests
 	$(PYTHON) -m ruff format --check agent/src api/src infra mcp/src tests
-	@set -eu; \
-	version=$$(command -v node >/dev/null 2>&1 && node --version || true); \
-	$(CHECK_NODE) || { printf '%s\n' \
-	  "lint: FAILED -- node: $${version:-not on PATH}. Needs ^$(NODE_MINIMUM) or >=$(NODE_MINIMUM_LTS)." \
-	  "  fix: install Node $(NODE_MINIMUM_LTS)+ (https://nodejs.org, 'brew install node', or nvm)." \
-	  "       oxlint@$(OXLINT_VERSION)'s own engines field is that floor. Without this line npm" \
-	  "       answers EBADENGINE about a package nobody typed -- which is how a pipeline whose" \
-	  "       image carried Node 18 failed here with nothing naming Node." >&2; exit 1; }
-	$(OXLINT) -c web/.oxlintrc.json web/js
 	$(PYTHON) -m mypy --config-file mypy.ini agent/src api/src mcp/src infra
 
 # ---------------------------------------------------------------------------------
@@ -193,7 +184,8 @@ V2_REGIONS = us-east-1 us-east-2 us-west-2 eu-west-1 ap-northeast-1
 
 BOOTSTRAP_STACK ?= CDKToolkit
 API_STACK = $(STACK_PREFIX)Api
-CONSOLE_STACK = $(STACK_PREFIX)Console
+AGENT_STACK = $(STACK_PREFIX)Runtime
+GATEWAY_STACK = $(STACK_PREFIX)Gateway
 # The unsuffixed account stack name. `infra/app.py::stack_names` instances the account stack
 # per consuming region, and the recipe resolves the name it builds from there; a stack with
 # this unsuffixed name is left over from an older layout, and the deploy closes by reporting
@@ -763,15 +755,14 @@ preflight:
 deploy:
 	@test -n "$(EMAIL)" || { printf '%s\n' \
 	  "deploy: EMAIL is required -- 'make deploy EMAIL=you@example.com'." \
-	  "  why: self-signup is off on the console's user pool (AllowAdminCreateUserOnly)," \
-	  "       so without a first operator there is no way into the board at all." >&2; exit 1; }
+	  "  why: the account stack's Bedrock spend budget sends alerts to this address." >&2; exit 1; }
 	@$(MAKE) --no-print-directory preflight
 	@$(PYTHON) -c 'import aws_cdk, rca_mcp' >/dev/null 2>&1 || { printf '%s\n' \
 	  "deploy: FAILED -- this checkout's virtualenv is missing aws-cdk-lib or rca_mcp." \
 	  "  fix: run 'make setup' first. It is idempotent." >&2; exit 1; }
 	@printf '%s\n' \
-	  "deploy: cdk deploy --all -- $(API_STACK), $(CONSOLE_STACK), the per-region" \
-	  "        $(ACCOUNT_STACK)<Region> stack, and the data and runtime stacks." \
+	  "deploy: cdk deploy --all -- $(API_STACK), $(AGENT_STACK), $(GATEWAY_STACK), the" \
+	  "        per-region $(ACCOUNT_STACK)<Region> stack, and the data stacks." \
 	  "        The FIRST deploy takes 15-25 MINUTES, almost all of it building and pushing" \
 	  "        the ~1.3 GB ARM64 agent image to ECR. A long silence here is the image, not" \
 	  "        a hang. A later deploy with nothing to change takes about a minute."
@@ -791,8 +782,8 @@ deploy:
 	      *) printf '%s\n' \
 	        "deploy: FAILED -- could not read the state of $$stack in us-east-1:" \
 	        "    $$status" \
-	        "  why: the account stack holds the console's CloudFront-scoped WAF web ACL and" \
-	        "       the Bedrock budget, and both are only creatable from us-east-1." \
+	        "  why: the account stack holds the Bedrock budget, and it is only creatable from" \
+	        "       us-east-1." \
 	        "  fix: check these credentials may cloudformation:DescribeStacks in us-east-1," \
 	        "       and that the session has not expired." >&2; exit 1 ;; \
 	    esac; \
@@ -832,59 +823,8 @@ deploy:
 	  -c account="$$account" -c region="$$region" \
 	  -c stackPrefix=$(STACK_PREFIX) -c budgetAlertEmail=$(EMAIL) $(CDK_CONTEXT)
 	@set -eu; \
-	region=$$($(json_output) $(CONSOLE_STACK) Region); \
-	bucket=$$($(json_output) $(CONSOLE_STACK) ConsoleBucket); \
-	distribution=$$($(json_output) $(CONSOLE_STACK) DistributionId); \
-	pool=$$($(json_output) $(CONSOLE_STACK) UserPoolId); \
-	client=$$($(json_output) $(CONSOLE_STACK) UserPoolClientId); \
-	domain=$$($(json_output) $(CONSOLE_STACK) CognitoDomain); \
-	printf '%s\n' \
-	  "// Written by 'make deploy' from $(CONSOLE_STACK)'s own outputs. Never committed:" \
-	  "// it is not a secret, but it names one live deployment (web/.gitignore)." \
-	  "window.RCA_CONFIG = {" \
-	  '  apiBase: "/api",' \
-	  "  region: \"$$region\"," \
-	  "  userPoolId: \"$$pool\"," \
-	  "  clientId: \"$$client\"," \
-	  "  cognitoDomain: \"$$domain\"," \
-	  "};" > web/config.js; \
-	aws s3 sync web/ "s3://$$bucket/" --region "$$region" --delete \
-	  --cache-control 'no-cache' \
-	  --exclude '.gitignore' --exclude 'config.example.js'; \
-	aws cloudfront create-invalidation --distribution-id "$$distribution" --paths '/*' >/dev/null; \
-	printf 'deploy: wrote web/config.js and uploaded web/ to %s, cache invalidated\n' "$$bucket"; \
-	aws s3api head-object --bucket "$$bucket" --key index.html --region "$$region" \
-	  >/dev/null 2>&1 || { printf '%s\n' \
-	  "deploy: FAILED -- the console bucket has no index.html after the upload." \
-	  "  why: the bucket is BLOCK_ALL and the OAC grant is s3:GetObject only, so S3" \
-	  "       answers a missing key with 403 AccessDenied rather than 404. CloudFront" \
-	  "       cannot serve an error page it also cannot fetch, so the console URL" \
-	  "       returns S3's own <Error><Code>AccessDenied</Code></Error> XML." \
-	  "  fix: re-run 'make deploy EMAIL=...'; the upload is idempotent. If it fails" \
-	  "       again, these credentials cannot s3:PutObject into $$bucket." >&2; exit 1; }
-	@set -eu; \
-	region=$$($(json_output) $(CONSOLE_STACK) Region); \
-	pool=$$($(json_output) $(CONSOLE_STACK) UserPoolId); \
-	if message=$$(aws cognito-idp admin-create-user --region "$$region" --user-pool-id "$$pool" \
-	    --username '$(EMAIL)' --user-attributes Name=email,Value='$(EMAIL)' \
-	    Name=email_verified,Value=true --desired-delivery-mediums EMAIL 2>&1 >/dev/null); then \
-	  printf '%s\n' \
-	    "deploy: $(EMAIL) is the first console operator. Cognito has emailed a temporary" \
-	    "        password, and the hosted UI forces a change on first sign-in."; \
-	elif printf '%s' "$$message" | grep -q UsernameExistsException; then \
-	  printf '%s\n' \
-	    "deploy: $(EMAIL) is already a console operator, so its password was left alone." ; \
-	else \
-	  printf '%s\n' \
-	    "deploy: FAILED -- could not create the console operator:" \
-	    "    $$message" \
-	    "  fix: check the address, and that these credentials may call" \
-	    "       cognito-idp:AdminCreateUser on $$pool, then re-run 'make deploy EMAIL=...'." >&2; \
-	  exit 1; \
-	fi
-	@set -eu; \
 	api=$$($(json_output) $(API_STACK) ApiUrl); \
-	region=$$($(json_output) $(CONSOLE_STACK) Region); \
+	region=$${AWS_REGION:-$${AWS_DEFAULT_REGION:-$$(aws configure get region)}}; \
 	stamp=$$(aws cloudformation describe-stacks --stack-name $(API_STACK) --region "$$region" \
 	  --query 'Stacks[0].LastUpdatedTime' --output text 2>/dev/null || true); \
 	case "$$stamp" in None) stamp="" ;; esac; \
@@ -899,32 +839,13 @@ deploy:
 	mv "$(RCA_HOME)/endpoint.json.tmp" "$(RCA_HOME)/endpoint.json"
 	@set -eu; \
 	printf '\n'; \
-	printf 'console: %s\n' "$$($(json_output) $(CONSOLE_STACK) ConsoleUrl)"; \
 	printf 'api:     %s\n' "$$($(json_output) $(API_STACK) ApiUrl)"; \
-	printf 'region:  %s\n' "$$($(json_output) $(CONSOLE_STACK) Region)"; \
+	printf 'region:  %s\n' "$${AWS_REGION:-$${AWS_DEFAULT_REGION:-$$(aws configure get region)}}"; \
 	printf '%s\n' \
 	  "" \
 	  "$(RCA_HOME)/endpoint.json carries that API URL now, so a running MCP server picks it" \
 	  "up with no restart and no URL is pasted into a config field anywhere." \
-	  "One exception: a plugin userConfig override -- api_url, aws_region or stack_name --" \
-	  "takes precedence over the document just written, so a plugin configured with one keeps" \
-	  "using it and will not see this deployment until that field is cleared." \
-	  "$(EMAIL) signs in at the console URL with the temporary password Cognito emailed."
-	@set -eu; \
-	origin=$$(git config --get remote.origin.url 2>/dev/null || true); \
-	case "$$origin" in \
-	  *github.com*) $(PYTHON) -c "$$RCA_REGISTER" "$$origin" || printf '%s\n' \
-	    "deploy: the deployment is up, but registering this repository did not finish." \
-	    "  fix: re-run 'make deploy EMAIL=...', or add the repository in the console --" \
-	    "       either way it takes no credential, and the console is also where the" \
-	    "       repository is authorised afterwards." >&2 ;; \
-	  "") printf '%s\n' \
-	    "deploy: this checkout has no 'origin' remote, so no repository was registered." \
-	    "        Register one from Claude Code with register_repository." ;; \
-	  *) printf '%s\n' \
-	    "deploy: origin ($$origin) is not a GitHub remote, so nothing was registered." \
-	    "        Only GitHub repositories can be registered." ;; \
-	esac
+	  "Budget alerts for Bedrock spend go to $(EMAIL)."
 	@set -eu; \
 	region=$${AWS_REGION:-$${AWS_DEFAULT_REGION:-$$(aws configure get region 2>/dev/null || true)}}; \
 	stack=$$(PYTHONPATH=infra $(PYTHON) -c \
@@ -938,7 +859,26 @@ deploy:
 	    "deploy: $(ACCOUNT_STACK) in us-east-1 is left over from a deploy before the account" \
 	    "        stack became one stack per consuming region. This deploy owns $$stack" \
 	    "        instead, and nothing reads $(ACCOUNT_STACK) any more. Delete it once no" \
-	    "        region still references it -- check that no other fleet's console" \
-	    "        distribution names its web ACL first, then:" \
+	    "        region still references it, then:" \
 	    "          aws cloudformation delete-stack --stack-name $(ACCOUNT_STACK) --region us-east-1"; \
 	fi
+
+# Detach the spend-cap deny policy after a budget action fires. Reads role ARNs and the
+# policy ARN from the per-region account stack outputs.
+budget-reset:
+	@set -eu; \
+	region=$${AWS_REGION:-$${AWS_DEFAULT_REGION:-$$(aws configure get region 2>/dev/null || true)}}; \
+	stack=$$(PYTHONPATH=infra $(PYTHON) -c \
+	  'import app, sys; print(app.stack_names(sys.argv[1], sys.argv[2]).account)' \
+	  "$(STACK_PREFIX)" "$$region"); \
+	outputs=$$(aws cloudformation describe-stacks --stack-name "$$stack" --region us-east-1 \
+	  --query 'Stacks[0].Outputs' --output json); \
+	policy_arn=$$(printf '%s' "$$outputs" | $(PYTHON) -c \
+	  'import json,sys; outs={o["OutputKey"]:o["OutputValue"] for o in json.load(sys.stdin)}; print(outs["SpendCapPolicyArn"])'); \
+	for key in ExecutionRoleArn DispatcherRoleArn; do \
+	  role_arn=$$(printf '%s' "$$outputs" | $(PYTHON) -c \
+	    'import json,sys; key=sys.argv[1]; outs={o["OutputKey"]:o["OutputValue"] for o in json.load(sys.stdin)}; print(outs[key])' "$$key"); \
+	  role_name=$$(basename "$$role_arn"); \
+	  aws iam detach-role-policy --role-name "$$role_name" --policy-arn "$$policy_arn" || true; \
+	done; \
+	printf '%s\n' "budget-reset: detached $$policy_arn from the runtime and dispatcher roles"

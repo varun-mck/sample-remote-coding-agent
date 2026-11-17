@@ -23,9 +23,7 @@ _REGION = "ap-southeast-1"
 # the number of `.parent`s.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_CONFIG_TABLE = "Configurations"
 _TASKS_TABLE = "Tasks"
-_CARDS_TABLE = "Cards"
 
 # The fake PATs, in one place. Every one of these is a string whose *job* is to be asserted
 # absent from a log line, an exception message or a URL, so a suite that spells its own is a
@@ -101,13 +99,9 @@ class AwsFixture:
     region: str
     dynamodb: Any
     sqs: Any
-    config_table: str
     tasks_table: str
-    cards_table: str
     task_queue_url: str
     task_dlq_url: str
-    provision_queue_url: str
-    provision_dlq_url: str
 
 
 def _queue_with_dlq(sqs: Any, name: str) -> tuple[str, str]:
@@ -135,79 +129,26 @@ def aws(monkeypatch: pytest.MonkeyPatch) -> Any:
         sqs = boto3.client("sqs", region_name=_REGION)
 
         dynamodb.create_table(
-            TableName=_CONFIG_TABLE,
-            KeySchema=[{"AttributeName": "configId", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "configId", "AttributeType": "S"},
-                {"AttributeName": "repository", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "byRepository",
-                    "KeySchema": [{"AttributeName": "repository", "KeyType": "HASH"}],
-                    "Projection": {"ProjectionType": "ALL"},
-                }
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        # No `byConfig` GSI on Tasks: the base table is already ordered by
-        # configuration, which is exactly what lets a `dynamodb:LeadingKeys`
-        # condition fence a container to its own repository.
-        dynamodb.create_table(
             TableName=_TASKS_TABLE,
-            KeySchema=[
-                {"AttributeName": "configId", "KeyType": "HASH"},
-                {"AttributeName": "taskId", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "configId", "AttributeType": "S"},
-                {"AttributeName": "taskId", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        dynamodb.create_table(
-            TableName=_CARDS_TABLE,
-            KeySchema=[{"AttributeName": "cardId", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "cardId", "AttributeType": "S"},
-                {"AttributeName": "configId", "AttributeType": "S"},
-                {"AttributeName": "createdAt", "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "byConfig",
-                    "KeySchema": [
-                        {"AttributeName": "configId", "KeyType": "HASH"},
-                        {"AttributeName": "createdAt", "KeyType": "RANGE"},
-                    ],
-                    "Projection": {"ProjectionType": "ALL"},
-                }
-            ],
+            KeySchema=[{"AttributeName": "taskId", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "taskId", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
 
         task_queue_url, task_dlq_url = _queue_with_dlq(sqs, "rca-tasks")
-        provision_queue_url, provision_dlq_url = _queue_with_dlq(sqs, "rca-provision")
 
-        # Handler modules bind these at import time, so they must be set before a
-        # test's `importlib.reload`.
-        monkeypatch.setenv("CONFIG_TABLE", _CONFIG_TABLE)
         monkeypatch.setenv("TASKS_TABLE", _TASKS_TABLE)
-        monkeypatch.setenv("CARDS_TABLE", _CARDS_TABLE)
         monkeypatch.setenv("TASK_QUEUE_URL", task_queue_url)
-        monkeypatch.setenv("PROVISION_QUEUE_URL", provision_queue_url)
+        monkeypatch.delenv("CONFIG_TABLE", raising=False)
+        monkeypatch.delenv("CARDS_TABLE", raising=False)
 
         yield AwsFixture(
             region=_REGION,
             dynamodb=dynamodb,
             sqs=sqs,
-            config_table=_CONFIG_TABLE,
             tasks_table=_TASKS_TABLE,
-            cards_table=_CARDS_TABLE,
             task_queue_url=task_queue_url,
             task_dlq_url=task_dlq_url,
-            provision_queue_url=provision_queue_url,
-            provision_dlq_url=provision_dlq_url,
         )
 
 

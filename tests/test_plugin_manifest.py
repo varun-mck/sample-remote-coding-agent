@@ -49,7 +49,7 @@ _PROJECT_MCP = REPO_ROOT / ".mcp.json"
 _SKILLS = _PLUGIN_ROOT / "skills"
 _COMMANDS = REPO_ROOT / ".claude/commands"
 _MAKEFILE = REPO_ROOT / "Makefile"
-_WEB_STACK = REPO_ROOT / "infra/stacks/web_stack.py"
+_API_STACK = REPO_ROOT / "infra/stacks/api_stack.py"
 _INFRA_APP = REPO_ROOT / "infra/app.py"
 
 # A fenced block, opener and closer included. `DOTALL` with a lazy body is what stops the
@@ -94,16 +94,10 @@ _SUBSTITUTIONS = (
 )
 
 _GUARDRAILS = (
-    # Was "never pass or echo a github token". The tool takes none now, so the stronger
-    # instruction is to refuse one: a model that asks for a credential sends the operator to
-    # create something the control plane answers `400 TokenNotAccepted` to.
     "never ask for or accept a github token",
     "never poll get_task in a loop",
-    "never call register_repository without explicit human intent",
-    # Registering is half the setup, and authorising is a browser step no tool here can take.
-    # Without this a model reports success and the operator's first task is refused with
-    # `409 GitHubNotAuthorized` for a reason nothing mentioned.
-    "never report a registration as finished",
+    "never call submit_task without explicit human intent",
+    "never call cancel_task without explicit human intent",
     "a draft offered for review, not working code",
 )
 
@@ -690,9 +684,6 @@ def test_the_remote_command_keeps_its_guardrails() -> None:
             assert guardrail in text, (
                 f"{path.relative_to(REPO_ROOT)} dropped the guardrail {guardrail!r}"
             )
-        assert "revised" in text, "a second `plan` step is a revision, not a retry"
-        assert "409 configurationnotready" in text, "a PENDING repository refuses tasks"
-
     for name in sorted({*(pair[0] for pair in _PAIRS), *_ONE_WAY_SKILLS}):
         path = _SKILLS / name / "SKILL.md"
         fields, _ = _frontmatter(path)
@@ -777,7 +768,7 @@ def test_the_scaffolded_repo_declares_the_entry_points_the_agent_sniffs(tmp_path
     # Imported inside the test on purpose: `coding_agent.git_ops` rewrites the ambient
     # `GIT_CONFIG_*` group at import, and `_git_env` above exists because of it. Keeping the
     # import off module scope keeps that side effect inside the one test that needs it.
-    from coding_agent.nodes import checkout
+    from coding_agent import detect
 
     templates = _scaffold_templates()
     assert templates, "nothing parsed, so the assertions below would pass vacuously"
@@ -788,15 +779,14 @@ def test_the_scaffolded_repo_declares_the_entry_points_the_agent_sniffs(tmp_path
             written.parent.mkdir(parents=True, exist_ok=True)
             written.write_text(content, encoding="utf-8")
 
-        assert checkout._detect_setup_command(root) == expected_setup, (
+        assert detect.detect_setup_command(root) == expected_setup, (
             f"the {language} template produces a tree whose setup command detects as "
-            f"{checkout._detect_setup_command(root)!r}, not {expected_setup!r}. Only a "
-            "`setup:` or `bootstrap:` Makefile target or a `scripts.setup` counts, and a "
-            "target line has to start at column 0 for `checkout._MAKE_TARGET` to see it."
+            f"{detect.detect_setup_command(root)!r}, not {expected_setup!r}. Only a "
+            "`setup:` or `bootstrap:` Makefile target or a `scripts.setup` counts."
         )
-        assert checkout._detect_verify_command(root) == expected_verify, (
+        assert detect.detect_verify_command(root) == expected_verify, (
             f"the {language} template produces a tree whose verify command detects as "
-            f"{checkout._detect_verify_command(root)!r}, not {expected_verify!r}. Nothing "
+            f"{detect.detect_verify_command(root)!r}, not {expected_verify!r}. Nothing "
             "downstream recovers from that: the run verifies nothing and every pull "
             "request it opens is a draft marked SUCCEEDED_UNVERIFIED."
         )
@@ -823,7 +813,7 @@ def test_the_scaffolded_templates_parse() -> None:
                         f"the {language} template's {path} block is not valid JSON "
                         f"({error}). A manifest with a trailing comma or a comment in it is "
                         "a repository whose entry points detect as nothing at all: "
-                        "`checkout._package_scripts` logs the parse failure and returns {}."
+                        "`detect._package_scripts` logs the parse failure and returns {}."
                     )
             if path.endswith(".py"):
                 try:
@@ -838,7 +828,7 @@ def test_the_scaffolded_templates_parse() -> None:
     makefile = templates["Python"]["Makefile"]
     assert "pwd -P" in makefile, (
         "the Python template's Makefile dropped the `pwd -P` that resolves `.venv`. "
-        "`checkout._link_venv` creates `.venv` as a SYMLINK before the setup command runs, "
+        "the runtime may create `.venv` as a SYMLINK before the setup command runs, "
         "and `python -m venv` refuses to build into one -- `EnvBuilder.ensure_directories` "
         "checks `os.path.islink` and `--clear` does not help. It fails as "
         "`ValueError: Unable to create directory` inside the runtime and nowhere else, so "
@@ -1052,7 +1042,7 @@ def test_the_preflight_target_checks_every_prerequisite() -> None:
     )
 
     synth = next(line for line in recipe.splitlines() if "$(CDK) synth" in line)
-    for stack in ("$(API_STACK)", "$(CONSOLE_STACK)", "$(ACCOUNT_STACK)"):
+    for stack in ("$(API_STACK)", "$(GATEWAY_STACK)", "$(ACCOUNT_STACK)"):
         assert stack not in synth, (
             f"the preflight synth names {stack}, which makes it a stack subset. All of "
             "infra/app.py::main() runs either way, so the stacks are still CONSTRUCTED -- what "
@@ -1145,51 +1135,28 @@ def test_the_preflight_target_checks_every_prerequisite() -> None:
 
 
 def test_the_deploy_target_does_what_the_skill_promises() -> None:
-    """The `deploy` recipe still does the six steps, in the order the console needs them.
+    """The `deploy` recipe runs preflight, deploys every stack, and writes endpoint discovery."""
 
-    `README.md`'s deploy step promises this and cannot check it, so a step quietly dropped from
-    the recipe becomes a walkthrough that lies. Each one fails silently in its own way: no
-    `web/config.js` and `s3 sync` and the console URL serves an empty bucket
-    (`infra/stacks/web_stack.py` carries no BucketDeployment precisely because this recipe
-    does it); no `s3api head-object` and an upload that produced nothing is a green deploy;
-    no `admin-create-user` and self-signup is off, so nobody can sign in at all; no
-    `UsernameExistsException` arm and the SECOND deploy fails on the operator who already
-    exists; no `endpoint.json` and a running MCP server needs a restart it was promised
-    it would not.
-    """
     recipe = _recipe("deploy")
 
     for probe, step in (
-        ("$(EMAIL)", "the EMAIL guard, and the first console operator it becomes"),
+        ("$(EMAIL)", "the EMAIL guard for the Bedrock spend budget"),
         ("preflight", "step 1, preflight"),
-        ("$(CDK) deploy --all", "step 2, the four stacks through the pinned CDK CLI"),
+        ("$(CDK) deploy --all", "step 2, every stack through the pinned CDK CLI"),
         (
             "--outputs-file",
-            "step 2's outputs file, which every later step reads instead of "
-            "calling describe-stacks per value",
+            "step 2's outputs file, which the endpoint step reads",
         ),
         (
             "-c account=",
-            "step 2's account context, without which the four in-region stacks are "
-            "environment-agnostic and AccountStack's cross_region_references=True refuses them",
+            "step 2's account context for cross-region account stacks",
         ),
         (
             "-c region=",
-            "step 2's region context -- the CDK CLI exports CDK_DEFAULT_REGION as an "
-            "environment variable and injects no `region` context key, so app.py's "
-            "try_get_context('region') is None without this and synth fails outright",
+            "step 2's region context for synth and deploy",
         ),
-        ("web/config.js", "step 3, the console configuration written from the stack's outputs"),
-        ("s3 sync", "step 3, the console upload"),
-        ("create-invalidation", "step 3's CloudFront invalidation after the upload"),
-        ("s3api head-object", "step 3's assertion that index.html actually landed"),
-        ("admin-create-user", "step 4, the first console operator"),
-        (
-            "UsernameExistsException",
-            "step 4's idempotence -- an existing operator is not a failure",
-        ),
-        ("endpoint.json", "step 5, the endpoint document a running MCP server already reads"),
-        ("remote.origin.url", "step 6, the repository this was run from"),
+        ("$(GATEWAY_STACK)", "the gateway stack name in the pre-deploy banner"),
+        ("endpoint.json", "the endpoint document a running MCP server already reads"),
     ):
         assert probe in recipe, f"the deploy recipe no longer does {step} ({probe!r} is gone)"
 
@@ -1199,16 +1166,6 @@ def test_the_deploy_target_does_what_the_skill_promises() -> None:
         "silence while the ARM64 image builds is indistinguishable from a hang."
     )
 
-    assert recipe.index("s3 sync") < recipe.index("admin-create-user"), (
-        "the deploy recipe uploads the console AFTER `cognito-idp admin-create-user`, which "
-        "`exit 1`s on anything but `UsernameExistsException` -- a credential without "
-        "cognito-idp:AdminCreateUser, a rejected address, or a Ctrl-C during the 15-25 minute "
-        "first deploy. The distribution is live from the moment `cdk deploy` returns, so an "
-        "upload behind a step that can fail for its own reasons leaves a live CloudFront "
-        "distribution over an empty S3 origin, and the console URL then answers with S3's own "
-        "<Error><Code>AccessDenied</Code></Error> XML instead of anything about the real cause."
-    )
-
     for key in _CACHE_KEYS:
         assert key in recipe, (
             f"the endpoint document written by `make deploy` omits {key!r}. The five keys are a "
@@ -1216,44 +1173,14 @@ def test_the_deploy_target_does_what_the_skill_promises() -> None:
             "error -- it is silently discarded on every server start."
         )
 
-    # Derived from the stack rather than spelled out, so this cannot drift from the outputs
-    # `tests/test_web_stack.py` pins. Importing api_stack is safe; only CONSTRUCTING a stack
-    # needs Docker.
-    outputs = re.findall(
-        r'CfnOutput\(\s*self,\s*"([A-Za-z]+)"', _WEB_STACK.read_text(encoding="utf-8")
+    api_stack_source = _API_STACK.read_text(encoding="utf-8")
+    assert API_URL_OUTPUT_KEY in api_stack_source, (
+        f"ApiStack must publish the {API_URL_OUTPUT_KEY!r} output"
     )
-    assert len(outputs) >= 7, f"WebStack publishes the values this recipe reads; found {outputs}"
-    for name in (*outputs, API_URL_OUTPUT_KEY):
-        assert name in recipe, (
-            f"WebStack publishes {name!r} for `make deploy` to read and the deploy recipe never "
-            "mentions it; an output nothing reads is an output nobody notices is wrong"
-        )
+    assert "ApiUrl" in recipe, "the deploy recipe must read the ApiUrl output from the API stack"
 
-    for label in ("console:", "api:", "region:"):
-        assert label in recipe, (
-            f"the deploy prints exactly three labelled facts and {label!r} is not one of them"
-        )
-
-    # The closing paragraph must name the override fields (`api_url`, `aws_region`,
-    # `stack_name`) because `mcp/src/rca_mcp/client.py::resolve_endpoint` returns an
-    # `RCA_API_URL` override without reading the cache, so a plugin configured with one
-    # keeps registering against the older deployment while the freshly deployed fleet lists
-    # zero configurations. Without the warning an operator following the deploy output would
-    # not know to clear the stale value.
-    closing = recipe[recipe.index("endpoint.json carries that API URL now") :]
-    assert "userConfig" in closing or all(
-        name in closing for name in ("api_url", "aws_region", "stack_name")
-    ), (
-        "the deploy's closing output promises `endpoint.json` is picked up with no restart "
-        "and never mentions that a plugin userConfig override (api_url, aws_region, "
-        "stack_name) beats it. resolve_endpoint returns RCA_API_URL without reading the "
-        "cache at all, so that promise is false for exactly the operator most likely to "
-        "have two deployments"
-    )
-    assert "precedence" in closing or "takes precedence" in closing, (
-        "the closing note names the override fields but not that they WIN over the "
-        "endpoint document just written, which is the whole point of the warning"
-    )
+    for label in ("api:", "region:"):
+        assert label in recipe, f"the deploy prints labelled facts and {label!r} is not one of them"
 
 
 def test_the_pinned_reference_is_not_older_than_the_fix_it_ships() -> None:

@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 # 1.43.0 because `bedrock-agentcore` needs a newer botocore than the Lambda runtime
 # ships (invariant 20).
 dependencies = [
-    "langgraph>=1.0,<2",
     "claude-agent-sdk>=0.2.0,<0.3.0",
     "bedrock-agentcore>=1.0,<2",
     # 1.43.95 is the release that added `platformVersion` to the AgentCore

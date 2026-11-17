@@ -22,20 +22,14 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-# A pinned copy of `api/src/handlers/configurations.py`'s two patterns, variable names
-# included. `mcp/` cannot import the original: the plugin runs this package with
-# `uv run --directory mcp` / `uvx --from git+...#subdirectory=mcp`, which resolves
-# `mcp/pyproject.toml` alone, and `api/` is a Lambda bundle that builds a DynamoDB
-# resource at import. `tests/test_mcp_format.py::test_the_repository_url_regex_agrees_
-# with_the_control_plane` compares the two pattern strings, so a change on either side
-# is a red test rather than a 400 an operator meets with a token already in flight.
-# If it goes red, re-copy the pattern -- never loosen the assertion.
-_HTTPS_REPOSITORY = re.compile(
-    r"^https://github\.com/(?P<owner>[A-Za-z0-9][A-Za-z0-9._-]*)/(?P<repo>[A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?/?$"
-)
-_SSH_REPOSITORY = re.compile(
-    r"^git@github\.com:(?P<owner>[A-Za-z0-9][A-Za-z0-9._-]*)/(?P<repo>[A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?$"
-)
+# Pinned copy of `api/src/handlers/runs.py::_REPO_URL` with owner/repo capture groups.
+# `mcp/` cannot import the handler module; `tests/test_mcp_format.py` keeps the shapes
+# aligned by comparing pattern strings. If it goes red, re-copy -- never loosen the assertion.
+# Acceptance shape pinned to `api/src/handlers/runs.py::_REPO_URL`; slug extraction allows
+# extra path segments before owner/repo (monorepo hosting layouts).
+_ACCEPT_REPOSITORY = re.compile(r"^https?://[^/]+/.+/.+|^git@[^:]+:.+/.+")
+_HTTPS_SLUG = re.compile(r"^https?://[^/]+/(?:.+/)?(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$")
+_SSH_REPOSITORY = re.compile(r"^git@[^:]+:(?:.+/)*(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
 
 # Field and list bounds. Generous enough to be useful, small enough that a whole view
 # stays a screenful.
@@ -74,18 +68,27 @@ _DEFAULT_STACK_NAME = "SampleCodingAgentApi"
 
 
 def repository_from_url(url: str) -> str:
-    """`owner/repo` for a GitHub clone URL, or `ValueError` naming both accepted forms.
+    """`owner/repo` for a clone URL on any configured host, or `ValueError` with both forms.
 
     Checked here, before the request, so a typo fails on this machine rather than as a signed
-    call to a route that answers 400 `InvalidRepositoryUrl`. The wording is the control
-    plane's, so the two failures read the same.
+    call to a route that answers 400 `InvalidRepositoryUrl`.
     """
-    match = _HTTPS_REPOSITORY.match(url) if isinstance(url, str) else None
-    match = match or (_SSH_REPOSITORY.match(url) if isinstance(url, str) else None)
+    if not isinstance(url, str):
+        raise ValueError(
+            "repositoryUrl must be https://host/owner/repo(.git) or "
+            f"git@host:owner/repo.git; got {url!r}"
+        )
+    text = url.strip()
+    if not _ACCEPT_REPOSITORY.match(text):
+        raise ValueError(
+            "repositoryUrl must be https://host/owner/repo(.git) or "
+            f"git@host:owner/repo.git; got {url!r}"
+        )
+    match = _HTTPS_SLUG.match(text) or _SSH_REPOSITORY.match(text)
     if not match:
         raise ValueError(
-            "repositoryUrl must be https://github.com/owner/repo(.git) or "
-            f"git@github.com:owner/repo.git; got {url!r}"
+            "repositoryUrl must be https://host/owner/repo(.git) or "
+            f"git@host:owner/repo.git; got {url!r}"
         )
     return f"{match.group('owner')}/{match.group('repo')}"
 
@@ -318,12 +321,16 @@ def _status_note(status: str) -> str:
     )
 
 
+def task_created(payload: Mapping[str, Any]) -> str:
+    return task(payload) + "\nThe task is queued for dispatch."
+
+
 def task(payload: Mapping[str, Any]) -> str:
     """`POST /tasks` and `GET /tasks/{taskId}` -- one run, in words."""
     status = str(payload.get("status") or "UNKNOWN")
     lines = [
-        f"task {payload.get('taskId', '?')} on configuration {payload.get('configId', '?')}",
-        f"repository: {payload.get('repository') or 'unknown'}",
+        f"task {payload.get('taskId', '?')}",
+        f"repository: {payload.get('repositoryUrl') or payload.get('repository') or 'unknown'}",
         f"status: {status}",
         f"prompt: {_truncate(payload.get('prompt'))}",
     ]
@@ -360,8 +367,12 @@ def task(payload: Mapping[str, Any]) -> str:
 
 
 def tasks(payload: Mapping[str, Any]) -> str:
-    """`GET /tasks?configId=…`."""
-    rows = [row for row in (payload.get("tasks") or []) if isinstance(row, Mapping)]
+    """`GET /tasks`."""
+    rows = [
+        row
+        for row in (payload.get("tasks") or payload.get("items") or [])
+        if isinstance(row, Mapping)
+    ]
     if not rows:
         return (
             "no tasks match. A configuration with no runs yet answers this way, and so does a "

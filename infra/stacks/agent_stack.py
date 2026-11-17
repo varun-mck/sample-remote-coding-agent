@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
+from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cloudwatch_actions
 from aws_cdk import aws_ec2 as ec2
@@ -265,7 +266,16 @@ def add_agent_network(
     # this VPC, so an endpoint here
     # would be an ENI in every AZ with no client -- the same reasoning the AgentCore comment
     # below applies to `bedrock-agentcore-control`.
-    private_subnets = ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+    # Every interface endpoint shares one subnet: the first private subnet in the NAT AZ.
+    if availability_zones:
+        private_subnets = ec2.SubnetSelection(
+            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
+            availability_zones=[availability_zones[0]],
+        )
+    else:
+        private_subnets = ec2.SubnetSelection(
+            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS, one_per_az=True
+        )
     for name, service in (
         ("BedrockRuntime", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME),
         # Both halves of an image pull: `ECR` is the API that hands out the auth token,
@@ -284,9 +294,9 @@ def add_agent_network(
         # The **data plane** only. The control plane is `bedrock-agentcore-control`, which
         # `provisioner.py` calls for `CreateMemory`/`DeleteMemory` from Lambdas this module's
         # docstring keeps deliberately outside this VPC -- an endpoint for it here would be an
-        # ENI in every AZ with no client. `BEDROCK_AGENTCORE_GATEWAY` is a third service
-        # (`bedrock-agentcore.gateway`) and nothing here speaks to a gateway either.
+        # ENI in every AZ with no client.
         ("AgentCore", ec2.InterfaceVpcEndpointAwsService.BEDROCK_AGENTCORE),
+        ("AgentCoreGateway", ec2.InterfaceVpcEndpointAwsService.BEDROCK_AGENTCORE_GATEWAY),
     ):
         vpc.add_interface_endpoint(f"{name}Endpoint", service=service, subnets=private_subnets)
 
@@ -743,6 +753,15 @@ class AgentStack(cdk.Stack):
         # `select_agent_zones`' answer, resolved by `app.py` against this account. Empty
         # keeps the old `max_azs` placement, which only an environment-agnostic synth wants.
         availability_zones: Sequence[str] = (),
+        plan_model_id: str = "",
+        code_model_id: str = "",
+        haiku_model_id: str = "",
+        fallback_model_id: str = "",
+        goal_enabled: bool = True,  # noqa: ARG002
+        git_author_name: str = "",
+        git_author_email: str = "",
+        gateway_url: str = "",
+        tasks_table_name: str = "",
         **kwargs: Any,
     ) -> None:
         # Set before `super().__init__`, because the property below is read during it.
@@ -837,3 +856,89 @@ class AgentStack(cdk.Stack):
                 asset_repository_arn=self.image.repository.repository_arn,
             ),
         )
+
+        self.execution_role = iam.Role(
+            self,
+            "ExecutionRole",
+            role_name=f"{app_name}-execution",
+            path="/rca/",
+            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
+            permissions_boundary=self.role_boundary,
+        )
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:Query",
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:GetDownloadUrlForLayer",
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                    "bedrock-agentcore:ListMemoryRecords",
+                    "bedrock-agentcore:GetMemoryRecord",
+                ],
+                resources=["*"],
+            )
+        )
+
+        runtime_subnets = network.vpc.select_subnets(
+            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
+            availability_zones=[self._agent_zones[0]] if self._agent_zones else None,
+        ).subnet_ids
+        runtime_env = {
+            "ANTHROPIC_MODEL": code_model_id,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": plan_model_id,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": code_model_id,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku_model_id,
+            "ANTHROPIC_FALLBACK_MODEL": fallback_model_id,
+            "AGENT_GIT_AUTHOR_NAME": git_author_name,
+            "AGENT_GIT_AUTHOR_EMAIL": git_author_email,
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+            "AIPDLC_BUNDLE_PATH": "/app/aipdlc",
+            "WORK_ROOT": "/mnt/workspace/work",
+            "TASKS_TABLE": tasks_table_name,
+        }
+        if gateway_url:
+            runtime_env["BEDROCK_AGENTCORE_GATEWAY_URL"] = gateway_url
+            runtime_env["GATEWAY_MCP_COMMAND"] = "echo gateway"
+
+        self.runtime = agentcore.CfnRuntime(
+            self,
+            "AgentRuntime",
+            agent_runtime_name=f"{app_name}_fleet",
+            role_arn=self.execution_role.role_arn,
+            agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
+                container_configuration=agentcore.CfnRuntime.ContainerConfigurationProperty(
+                    container_uri=self.image.image_uri
+                )
+            ),
+            network_configuration=agentcore.CfnRuntime.NetworkConfigurationProperty(
+                network_mode="VPC",
+                network_mode_config=agentcore.CfnRuntime.VpcConfigProperty(
+                    subnets=runtime_subnets,
+                    security_groups=[network.security_group.security_group_id],
+                ),
+            ),
+            platform_version="V2",
+            protocol_configuration="HTTP",
+            lifecycle_configuration=agentcore.CfnRuntime.LifecycleConfigurationProperty(
+                max_lifetime=28800
+            ),
+            environment_variables=runtime_env,
+        )
+        self.agent_runtime_arn: str = self.runtime.attr_agent_runtime_arn
+
+        cdk.CfnOutput(self, "AgentRuntimeArn", value=self.agent_runtime_arn)
+        cdk.CfnOutput(self, "ExecutionRoleArn", value=self.execution_role.role_arn)

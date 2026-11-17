@@ -16,7 +16,6 @@ from pathlib import Path
 
 import app
 import pytest
-from coding_agent import subagents
 from conftest import REPO_ROOT
 from stacks import account_stack
 
@@ -67,7 +66,7 @@ def test_the_makefile_declares_exactly_the_five_targets() -> None:
             r"^([A-Za-z][A-Za-z0-9_-]*):", (REPO_ROOT / "Makefile").read_text(), re.MULTILINE
         )
     )
-    assert declared == {"setup", "test", "lint", "preflight", "deploy"}, (
+    assert declared == {"setup", "test", "lint", "preflight", "deploy", "budget-reset"}, (
         "invariant 35: `setup:` and `test:` are this repository's declared "
         "setupCommand and verifyCommand. An agent uses only an entry point the "
         "repository declared, so renaming `setup` switches verification off "
@@ -102,7 +101,7 @@ def test_the_makefile_mirrors_the_stack_prefix_infra_owns() -> None:
         "that succeeds and then fails reading back stacks nothing wrote."
     )
 
-    for variable in ("API_STACK", "CONSOLE_STACK", "ACCOUNT_STACK"):
+    for variable in ("API_STACK", "AGENT_STACK", "GATEWAY_STACK", "ACCOUNT_STACK"):
         assignment = re.search(rf"^{variable} \??= (.+)$", makefile, re.MULTILINE)
         assert assignment is not None, f"Makefile no longer defines {variable}"
         value = assignment.group(1)
@@ -154,9 +153,9 @@ def test_the_deploy_waits_out_a_busy_account_stack() -> None:
             f"the deploy recipe does not {probe!r}. The wait has to read the stack's actual "
             "state: anything else is a sleep that guesses."
         )
-    assert f"--region {account_stack.WAF_REGION}" in recipe, (
-        f"the wait does not poll --region {account_stack.WAF_REGION}. Asserted against the "
-        "constant rather than the literal so the recipe and `account_stack.WAF_REGION` cannot "
+    assert f"--region {account_stack.BUDGET_REGION}" in recipe, (
+        f"the wait does not poll --region {account_stack.BUDGET_REGION}. Asserted against the "
+        "constant rather than the literal so the recipe and `account_stack.BUDGET_REGION` cannot "
         "drift: the account stack is only ever created in the WAF's region, and a poll of the "
         "deploy region finds nothing and waves a busy stack straight through."
     )
@@ -254,7 +253,9 @@ def test_the_outputs_reader_names_a_missing_stack_instead_of_raising(tmp_path: P
     """
     program = _defined_program("RCA_OUTPUT", tmp_path)
     outputs = tmp_path / "stack-outputs.json"
-    outputs.write_text(json.dumps({"SampleCodingAgentConsole": {"Region": "ap-southeast-1"}}))
+    outputs.write_text(
+        json.dumps({"SampleCodingAgentApi": {"ApiUrl": "https://example.execute-api.local"}})
+    )
 
     def run(stack: str, key: str) -> subprocess.CompletedProcess[str]:
         # A list argv: `sys.executable` and a program this test wrote to `tmp_path`.
@@ -265,16 +266,16 @@ def test_the_outputs_reader_names_a_missing_stack_instead_of_raising(tmp_path: P
             text=True,
         )
 
-    good = run("SampleCodingAgentConsole", "Region")
+    good = run("SampleCodingAgentApi", "ApiUrl")
     assert good.returncode == 0, f"the good case failed: {good.stderr}"
-    assert good.stdout == "ap-southeast-1\n", (
+    assert good.stdout == "https://example.execute-api.local\n", (
         f"the good case printed {good.stdout!r}. The eleven call sites capture stdout with "
         "command substitution, so anything but the value alone lands in a config file, a "
         "bucket name or an AWS CLI argument."
     )
     assert good.stderr == "", f"the good case wrote {good.stderr!r} to stderr"
 
-    missing_stack = run("FooConsole", "Region")
+    missing_stack = run("FooApi", "ApiUrl")
     assert missing_stack.returncode != 0, (
         "reading an absent stack exited 0. The call sites run under `set -eu`, so a zero "
         "exit here lets the deploy carry on with an empty bucket name."
@@ -283,9 +284,7 @@ def test_the_outputs_reader_names_a_missing_stack_instead_of_raising(tmp_path: P
         f"the missing-stack case printed {missing_stack.stdout!r} on stdout, which is the "
         "stream the caller captures as a value."
     )
-    assert "FooConsole" in missing_stack.stderr and (
-        "SampleCodingAgentConsole" in missing_stack.stderr
-    ), (
+    assert "FooApi" in missing_stack.stderr and ("SampleCodingAgentApi" in missing_stack.stderr), (
         "the message must name the stack it looked for AND the stacks the file does carry -- "
         "that pair is what tells an operator the prefix, not the deploy, is what went wrong. "
         f"Got: {missing_stack.stderr!r}"
@@ -297,9 +296,9 @@ def test_the_outputs_reader_names_a_missing_stack_instead_of_raising(tmp_path: P
         f"naming the variable. Got: {missing_stack.stderr!r}"
     )
 
-    missing_key = run("SampleCodingAgentConsole", "ConsoleBucket")
+    missing_key = run("SampleCodingAgentApi", "MissingOutput")
     assert missing_key.returncode != 0, "reading an absent output key exited 0"
-    assert "ConsoleBucket" in missing_key.stderr, (
+    assert "MissingOutput" in missing_key.stderr, (
         "a stack that exists but lacks the output key must have the key named -- it is a "
         f"different mistake from a wrong prefix. Got: {missing_key.stderr!r}"
     )
@@ -407,18 +406,24 @@ def test_the_agent_image_pins_the_claude_cli_and_smoke_checks_it() -> None:
     )
 
 
-def test_the_agent_image_installs_the_pinned_aws_documentation_server() -> None:
-    assert subagents.AWS_DOCS_REQUIREMENT in _dockerfile(), (
-        f"{_DOCKERFILE} must install {subagents.AWS_DOCS_REQUIREMENT!r} at build time: "
-        "`subagents.AWS_DOCS_SERVER` runs `uvx <package>==<version>` at run time and is "
-        "meant to resolve the environment this build already cached."
+def test_the_agent_image_carries_the_aipdlc_bundle_not_aws_docs_mcp() -> None:
+    raw = (REPO_ROOT / _DOCKERFILE).read_text()
+    assert "COPY aipdlc" in raw and "AIPDLC_BUNDLE_PATH" in raw, (
+        f"{_DOCKERFILE} must bake the AIPDLC bundle for the harness plugin."
     )
-    assert _dockerfile_args()["AWS_DOCS_MCP_VERSION"] == subagents.AWS_DOCS_VERSION, (
-        "invariant 34: the image's `AWS_DOCS_MCP_VERSION` and `subagents.AWS_DOCS_VERSION` "
-        "must be the same version. A drift turns the run-time `uvx` into a registry fetch "
-        "from inside the container -- or, with no egress, into a documentation tool that "
-        "silently does not appear, because a missing MCP server is an absent tool and "
-        "never an error."
+    instructions = [
+        line
+        for line in re.sub(r"\\\n\s*", " ", raw).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    joined = "\n".join(instructions)
+    assert "AWS_DOCS_MCP" not in joined and "aws-documentation-mcp" not in joined, (
+        "the image no longer installs the AWS documentation MCP server at build time; "
+        "git tools reach the fleet through AgentCore Gateway at runtime (GATEWAY_MCP_COMMAND)."
+    )
+    options = (REPO_ROOT / "agent/src/coding_agent/options.py").read_text()
+    assert "GATEWAY_MCP_COMMAND" in options and "gateway" in options, (
+        "harness sessions must still wire the gateway MCP proxy from fleet environment."
     )
 
 
@@ -471,15 +476,12 @@ def test_the_agent_image_installs_nothing_from_a_moving_reference() -> None:
 def test_the_agent_image_bakes_the_skills_and_sets_no_work_root() -> None:
     raw = (REPO_ROOT / _DOCKERFILE).read_text()
 
-    assert "COPY skills /app/skills" in raw and "AGENT_SKILL_PATHS=/app/skills" in raw, (
-        f"{_DOCKERFILE} must copy `agent/skills` whole and point `AGENT_SKILL_PATHS` at it. "
-        "That directory is one plugin root containing `skills/<name>/SKILL.md`, and the "
-        "nesting IS the layout `tests/test_skills.py` pins -- copy its contents instead and "
-        "both skills silently never load, because the CLI reports a missing skill as nothing."
+    assert "COPY aipdlc" in raw and "AIPDLC_BUNDLE_PATH" in raw, (
+        f"{_DOCKERFILE} must bake the AIPDLC plugin bundle the harness loads at run time."
     )
-    assert "COPY agent/skills" not in raw, (
-        "the build context is `agent/`, so a `COPY agent/skills` source resolves to "
-        '`agent/agent/skills`: the first real deploy dies on `"/agent/skills": not found`.'
+    assert "COPY agent/aipdlc" not in raw, (
+        "the build context is `agent/`, so `COPY agent/aipdlc` resolves to "
+        "`agent/agent/aipdlc` and the first deploy dies on a missing path."
     )
     assert "WORK_ROOT" not in raw, (
         "invariant 26: the image must set no work-root environment variable. A Dockerfile "
@@ -581,33 +583,4 @@ def test_mypy_excludes_the_synthesized_cloud_assembly() -> None:
     assert not pattern.search("agent/src/coding_agent/state.py"), (
         f"mypy.ini's exclude {excludes[0]!r} also matches the real agent source, so the copy "
         f"is not what is being skipped -- the package is"
-    )
-
-
-def test_the_console_upload_sets_a_cache_directive() -> None:
-    """`make deploy`'s S3 sync must send `Cache-Control`, or a console change can be
-    invisible to the operator who deployed it.
-
-    Without a directive these objects carry none at all: browsers cache heuristically, ES
-    module imports especially so, and `create-invalidation` clears CloudFront's copy and never
-    the browser's. This is not hypothetical -- a register-page change was verified live at the
-    origin (`LastModified`, `ETag`) and at the edge, with the invalidation `Completed`, while
-    the browser still rendered a sentence that existed nowhere server-side.
-
-    The assertion is on the *directive*, not on the value: `no-cache` is the right answer while
-    `web/js` ships unbuilt with stable filenames, and content-hashed assets would want
-    something else entirely. What must not happen is sending nothing.
-    """
-    recipe = (REPO_ROOT / "Makefile").read_text()
-    sync = [
-        line for line in re.sub(r"\\\n\s*", " ", recipe).splitlines() if "aws s3 sync web/" in line
-    ]
-    assert len(sync) == 1, (
-        f"expected exactly one console upload in the Makefile; found {len(sync)}. Two would "
-        "drift, and this test could then pass while the one that runs sends no directive."
-    )
-    assert "--cache-control" in sync[0], (
-        "the console upload must set --cache-control. Without it every object ships with no "
-        "cache directive, so an operator can hard-refresh and still be served the previous "
-        f"JavaScript with nothing to indicate it. Got: {sync[0]!r}"
     )

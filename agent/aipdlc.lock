@@ -1,0 +1,3 @@
+# Local bundle source for scripts/sync-bundle.sh
+source=agent/aipdlc
+sha=local
