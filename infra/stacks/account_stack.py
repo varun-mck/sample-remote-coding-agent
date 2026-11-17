@@ -56,6 +56,8 @@ class AccountStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         cdk.Tags.of(self).add("Application", app_name)
+        cdk.CfnOutput(self, "ExecutionRoleArn", value=execution_role_arn)
+        cdk.CfnOutput(self, "DispatcherRoleArn", value=dispatcher_role_arn)
 
         self.spend_cap_policy = iam.ManagedPolicy(
             self,
@@ -64,6 +66,7 @@ class AccountStack(cdk.Stack):
             description="Deny Bedrock and AgentCore invocation when the monthly cap fires",
             statements=spend_cap_deny_statements(),
         )
+        cdk.CfnOutput(self, "SpendCapPolicyArn", value=self.spend_cap_policy.managed_policy_arn)
 
         budget = budgets.CfnBudget(
             self,
@@ -98,6 +101,11 @@ class AccountStack(cdk.Stack):
             )
         )
 
+        address = alert_email.strip()
+        if not address:
+            # A budget action needs between 1 and 11 subscribers, and the address is the
+            # only one this stack has; `_notifications` already warned about it.
+            return
         budgets.CfnBudgetsAction(
             self,
             "SpendCapAt100",
@@ -115,12 +123,10 @@ class AccountStack(cdk.Stack):
                     roles=[execution_role_arn, dispatcher_role_arn],
                 )
             ),
-            subscribers=[],
+            subscribers=[
+                budgets.CfnBudgetsAction.SubscriberProperty(type="EMAIL", address=address)
+            ],
         )
-
-        cdk.CfnOutput(self, "SpendCapPolicyArn", value=self.spend_cap_policy.managed_policy_arn)
-        cdk.CfnOutput(self, "ExecutionRoleArn", value=execution_role_arn)
-        cdk.CfnOutput(self, "DispatcherRoleArn", value=dispatcher_role_arn)
 
     def _notifications(
         self, alert_email: str
@@ -129,7 +135,8 @@ class AccountStack(cdk.Stack):
         if not address:
             cdk.Annotations.of(self).add_warning(
                 "no budget alert address was given, so the Bedrock spend budget was created "
-                "with no notifications. Deploy with "
+                "with no notifications and no 100% spend-cap action (a budget action needs a "
+                "subscriber). Deploy with "
                 "'make deploy EMAIL=you@example.com' (or -c budgetAlertEmail=...) to wire it."
             )
             return None

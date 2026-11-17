@@ -15,6 +15,8 @@ openapi: 3.0.3
 info:
   title: GitHub REST API (placeholder)
   version: 0.0.1
+servers:
+  - url: https://api.github.com
 paths:
   /repos/{owner}/{repo}/pulls:
     post:
@@ -47,6 +49,8 @@ openapi: 3.0.3
 info:
   title: Bitbucket Cloud API (placeholder)
   version: 0.0.1
+servers:
+  - url: https://api.bitbucket.org/2.0
 paths:
   /repositories/{workspace}/{repo_slug}/pullrequests:
     post:

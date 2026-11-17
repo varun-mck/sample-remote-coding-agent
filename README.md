@@ -18,12 +18,15 @@ host.
 
 ## Architecture
 
+See [docs/architecture-aipdlc.md](docs/architecture-aipdlc.md) for a simple component/flow diagram.
+
 **AgentCore Runtime V2 only** in VPC mode. Supported regions include `us-east-1`, `us-east-2`,
 `us-west-1`, `us-west-2`, `eu-west-1`, `eu-west-2`, `eu-central-1`, `ap-southeast-1`,
 `ap-southeast-2`, `ap-northeast-1`, `ap-south-1`, `ca-central-1`; the full set is
 `agent_stack.AGENTCORE_VPC_ZONE_IDS`.
 
-- **Control plane:** API Gateway, Lambda (`tasks`, `dispatcher`), SQS, DynamoDB tasks table,
+- **Control plane:** a Lambda function URL (`AWS_IAM` auth, fronting a `router` Lambda;
+  API Gateway is denied by SCP), Lambda (`tasks`, `dispatcher`), SQS, DynamoDB tasks table,
   Bedrock prompt guardrail.
 - **Runtime:** one static AgentCore runtime (VPC, ARM64) running the harness and baked
   AIPDLC bundle (`agent/aipdlc/`).

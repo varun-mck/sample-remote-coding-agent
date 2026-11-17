@@ -302,7 +302,7 @@ export RCA_OUTPUT
 json_output = $(PYTHON) -c "$$RCA_OUTPUT" "$(OUTPUTS)"
 
 # Step 6 of the deploy, as a program rather than a shell pipeline, because the control plane
-# is IAM-authorized `execute-api` and the `aws` CLI cannot sign a request to it at all -- the
+# is an IAM-authorized Lambda function URL and the `aws` CLI cannot sign a request to it -- the
 # in-tree `rca_mcp.client.ApiClient` is the only signer on this machine.
 #
 # **It asks for nothing.** Registration takes no credential, and the API refuses a body

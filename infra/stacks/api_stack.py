@@ -1,4 +1,10 @@
-"""The control plane: task HTTP routes, the dispatch queue consumer, and optional guardrail."""
+"""The control plane: task HTTP routes, the dispatch queue consumer, and optional guardrail.
+
+The HTTP front door is a Lambda function URL with `AWS_IAM` auth, not API Gateway: the
+organisation's SCPs deny `apigateway:*` (even reads) and deny function URLs with any auth
+type but `AWS_IAM`. The URL fronts `handlers.router`, which invokes each route's own Lambda,
+so every route keeps its own role and grant set.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +13,6 @@ from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import Duration, RemovalPolicy
-from aws_cdk import aws_apigatewayv2 as apigwv2
-from aws_cdk import aws_apigatewayv2_authorizers as apigwv2_authorizers
-from aws_cdk import aws_apigatewayv2_integrations as apigwv2_integrations
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_event_sources as lambda_event_sources
@@ -33,6 +36,8 @@ QUEUE_ENTRY_POINTS: tuple[tuple[str, str], ...] = (
     ("dispatcher", "dlq_handler"),
 )
 
+ROUTER_ENTRY_POINT: tuple[str, str] = ("router", "lambda_handler")
+
 SELF_CHAINING_ENTRY_POINTS: frozenset[tuple[str, str]] = frozenset()
 
 _CAPABILITIES: frozenset[str] = frozenset(
@@ -43,6 +48,7 @@ _CAPABILITIES: frozenset[str] = frozenset(
         "agentcore:invoke",
         "agentcore:stop",
         "guardrail:apply",
+        "routes:invoke",
     }
 )
 
@@ -53,7 +59,12 @@ _ENTRY_POINT_GRANTS: dict[tuple[str, str], tuple[str, ...]] = {
     ("tasks", "cancel"): ("tasks:read", "tasks:write", "agentcore:stop"),
     ("dispatcher", "lambda_handler"): ("tasks:read", "tasks:write", "agentcore:invoke"),
     ("dispatcher", "dlq_handler"): ("tasks:write",),
+    ROUTER_ENTRY_POINT: ("routes:invoke",),
 }
+
+# The router waits on the route it invokes, so it must outlive the slowest one.
+_ROUTE_TIMEOUT_SECONDS = 30
+_ROUTER_TIMEOUT_SECONDS = 40
 
 
 def _common_environment(
@@ -115,15 +126,9 @@ class ApiStack(cdk.Stack):
             data, self._guardrail, agent_runtime_arn=agent.agent_runtime_arn
         )
 
-        api = apigwv2.HttpApi(
-            self,
-            "Api",
-            api_name=f"{app_name}-api",
-            default_authorizer=apigwv2_authorizers.HttpIamAuthorizer(),
-        )
-
         self.handler_arns: dict[str, str] = {}
         self.dispatcher_role_arn: str = ""
+        self._route_functions: list[lambda_.Function] = []
 
         for method, path, module, function in ROUTES:
             read_route = method == "GET"
@@ -131,17 +136,28 @@ class ApiStack(cdk.Stack):
                 _construct_id(module, function),
                 module=module,
                 function=function,
-                timeout=Duration.seconds(10) if read_route else Duration.seconds(30),
+                timeout=Duration.seconds(10 if read_route else _ROUTE_TIMEOUT_SECONDS),
                 memory=256 if read_route else 512,
                 environment=common,
                 capabilities=_ENTRY_POINT_GRANTS[(module, function)],
             )
-            api.add_routes(
-                path=path,
-                methods=[apigwv2.HttpMethod(method)],
-                integration=apigwv2_integrations.HttpLambdaIntegration(f"{module}-{function}", fn),
-            )
+            self._route_functions.append(fn)
             self.handler_arns[f"{method} {path}"] = fn.function_arn
+
+        router_module, router_function = ROUTER_ENTRY_POINT
+        router = self._function(
+            _construct_id(router_module, router_function),
+            module=router_module,
+            function=router_function,
+            timeout=Duration.seconds(_ROUTER_TIMEOUT_SECONDS),
+            memory=256,
+            environment={
+                "ROUTE_TARGETS": self.to_json_string(self.handler_arns),
+                "LOG_LEVEL": "INFO",
+            },
+            capabilities=_ENTRY_POINT_GRANTS[ROUTER_ENTRY_POINT],
+        )
+        api_url = router.add_function_url(auth_type=lambda_.FunctionUrlAuthType.AWS_IAM)
 
         dispatcher = self._function(
             _construct_id("dispatcher", "lambda_handler"),
@@ -174,7 +190,7 @@ class ApiStack(cdk.Stack):
             lambda_event_sources.SqsEventSource(data.task_dlq, batch_size=1)
         )
 
-        cdk.CfnOutput(self, API_URL_OUTPUT_KEY, value=api.api_endpoint)
+        cdk.CfnOutput(self, API_URL_OUTPUT_KEY, value=api_url.url)
         cdk.CfnOutput(self, "DispatcherRoleArn", value=self.dispatcher_role_arn)
 
     def _function(
@@ -221,6 +237,9 @@ class ApiStack(cdk.Stack):
                 data.tasks.grant_write_data(fn)
             elif capability == "tasks-queue:send":
                 data.task_queue.grant_send_messages(fn)
+            elif capability == "routes:invoke":
+                for route in self._route_functions:
+                    route.grant_invoke(fn)
             elif capability == "agentcore:invoke":
                 fn.add_to_role_policy(
                     iam.PolicyStatement(

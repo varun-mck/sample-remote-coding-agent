@@ -66,10 +66,18 @@ def test_the_budget_action_attaches_the_spend_cap_at_100_percent(template: Templ
     assert roles == [_EXECUTION_ROLE, _DISPATCHER_ROLE]
 
 
+def test_the_budget_action_notifies_the_alert_address(template: Template) -> None:
+    """CloudFormation's early validation rejects a budget action with no subscribers."""
+    (action,) = _properties(template, "AWS::Budgets::BudgetsAction")
+    assert action["Subscribers"] == [{"Type": "EMAIL", "Address": _ALERT_EMAIL}]
+
+
 def test_an_empty_alert_address_leaves_the_budget_with_no_notifications(tmp_path: Path) -> None:
     stack = _build(tmp_path, alert_email="")
-    (budget,) = _properties(Template.from_stack(stack), "AWS::Budgets::Budget")
+    template = Template.from_stack(stack)
+    (budget,) = _properties(template, "AWS::Budgets::Budget")
     assert "NotificationsWithSubscribers" not in budget
+    template.resource_count_is("AWS::Budgets::BudgetsAction", 0)
     Annotations.from_stack(stack).has_warning(
         "*", Match.string_like_regexp("no budget alert address")
     )

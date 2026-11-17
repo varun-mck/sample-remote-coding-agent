@@ -188,6 +188,7 @@ class AgentNetwork:
     vpc: ec2.Vpc
     security_group: ec2.SecurityGroup
     dns_query_log_group: logs.LogGroup
+    dynamodb_endpoint_url: str
 
 
 def add_agent_network(
@@ -196,6 +197,7 @@ def add_agent_network(
     app_name: str,
     alert_email: str,
     availability_zones: Sequence[str] = (),
+    endpoint_az_count: int = 1,
 ) -> AgentNetwork:
     """The VPC, its endpoints, the 443-only security group, and the DNS Firewall (Tier 2 #16).
 
@@ -266,11 +268,12 @@ def add_agent_network(
     # this VPC, so an endpoint here
     # would be an ENI in every AZ with no client -- the same reasoning the AgentCore comment
     # below applies to `bedrock-agentcore-control`.
-    # Every interface endpoint shares one subnet: the first private subnet in the NAT AZ.
+    # Interface endpoints are billed per AZ, so they sit in the first `endpoint_az_count`
+    # zones (one by default, the NAT AZ) while the runtime spans every private subnet.
     if availability_zones:
         private_subnets = ec2.SubnetSelection(
             subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
-            availability_zones=[availability_zones[0]],
+            availability_zones=list(availability_zones[: max(1, endpoint_az_count)]),
         )
     else:
         private_subnets = ec2.SubnetSelection(
@@ -307,6 +310,58 @@ def add_agent_network(
         ("S3", ec2.GatewayVpcEndpointAwsService.S3),
     ):
         vpc.add_gateway_endpoint(f"{name}Endpoint", service=gateway_service)
+
+    # The account's NACL guardrail deletes every inbound allow wider than a public /24, so
+    # replies from S3's and DynamoDB's public addresses -- which is all a gateway endpoint
+    # routes to -- never get back in. Their interface endpoints answer from a private address
+    # in this VPC instead. S3's private DNS covers `*.s3.<region>.amazonaws.com`, the ECR layer
+    # host, but only with `AllResolvers`: the default sends in-VPC lookups to the gateway.
+    s3_interface = vpc.add_interface_endpoint(
+        "S3InterfaceEndpoint",
+        service=ec2.InterfaceVpcEndpointAwsService.S3,
+        subnets=private_subnets,
+    )
+    cfn_s3_interface = s3_interface.node.default_child
+    assert isinstance(cfn_s3_interface, ec2.CfnVPCEndpoint)
+    cfn_s3_interface.add_property_override(
+        "DnsOptions.PrivateDnsOnlyForInboundResolverEndpoint", "AllResolvers"
+    )
+    # DynamoDB's interface endpoint has no private DNS, so the runtime is pointed at it with
+    # `AWS_ENDPOINT_URL_DYNAMODB` (see `AgentNetwork.dynamodb_endpoint_url`).
+    dynamodb_interface = vpc.add_interface_endpoint(
+        "DynamoDbInterfaceEndpoint",
+        service=ec2.InterfaceVpcEndpointAwsService.DYNAMODB,
+        subnets=private_subnets,
+        private_dns_enabled=False,
+    )
+    dynamodb_endpoint_url = "https://" + cdk.Fn.select(
+        1, cdk.Fn.split(":", cdk.Fn.select(0, dynamodb_interface.vpc_endpoint_dns_entries))
+    )
+
+    # An explicit ACL rather than the VPC's default one, whose inbound allow-all the same
+    # guardrail strips. Inbound is the VPC CIDR only -- private, so the guardrail keeps it --
+    # which covers every reply from an interface endpoint and from the NAT gateway's private
+    # side. Egress stays open: the security group above is the egress control.
+    acl = ec2.NetworkAcl(
+        vpc,
+        "AgentSubnetAcl",
+        vpc=vpc,
+        subnet_selection=ec2.SubnetSelection(subnets=vpc.public_subnets + vpc.private_subnets),
+    )
+    acl.add_entry(
+        "InFromVpc",
+        rule_number=100,
+        cidr=ec2.AclCidr.ipv4(vpc.vpc_cidr_block),
+        traffic=ec2.AclTraffic.all_traffic(),
+        direction=ec2.TrafficDirection.INGRESS,
+    )
+    acl.add_entry(
+        "OutAll",
+        rule_number=100,
+        cidr=ec2.AclCidr.any_ipv4(),
+        traffic=ec2.AclTraffic.all_traffic(),
+        direction=ec2.TrafficDirection.EGRESS,
+    )
 
     # -- the DNS Firewall deny list (Tier 2 #16) ------------------------------
     deny_list = route53resolver.CfnFirewallDomainList(
@@ -431,7 +486,12 @@ def add_agent_network(
             "'make deploy EMAIL=you@example.com' (or -c budgetAlertEmail=...) to wire it."
         )
 
-    return AgentNetwork(vpc=vpc, security_group=security_group, dns_query_log_group=log_group)
+    return AgentNetwork(
+        vpc=vpc,
+        security_group=security_group,
+        dns_query_log_group=log_group,
+        dynamodb_endpoint_url=dynamodb_endpoint_url,
+    )
 
 
 def execution_role_boundary_statements(
@@ -753,6 +813,7 @@ class AgentStack(cdk.Stack):
         # `select_agent_zones`' answer, resolved by `app.py` against this account. Empty
         # keeps the old `max_azs` placement, which only an environment-agnostic synth wants.
         availability_zones: Sequence[str] = (),
+        endpoint_az_count: int = 1,
         plan_model_id: str = "",
         code_model_id: str = "",
         haiku_model_id: str = "",
@@ -810,6 +871,7 @@ class AgentStack(cdk.Stack):
             app_name=app_name,
             alert_email=alert_email,
             availability_zones=self._agent_zones,
+            endpoint_az_count=endpoint_az_count,
         )
         self.vpc = network.vpc
         self.security_group = network.security_group
@@ -892,9 +954,10 @@ class AgentStack(cdk.Stack):
             )
         )
 
+        # Every private subnet, one per zone: AgentCore expects at least two subnets in
+        # supported zones, while the endpoints above may sit in only one of them.
         runtime_subnets = network.vpc.select_subnets(
-            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
-            availability_zones=[self._agent_zones[0]] if self._agent_zones else None,
+            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
         ).subnet_ids
         runtime_env = {
             "ANTHROPIC_MODEL": code_model_id,
@@ -909,6 +972,7 @@ class AgentStack(cdk.Stack):
             "AIPDLC_BUNDLE_PATH": "/app/aipdlc",
             "WORK_ROOT": "/mnt/workspace/work",
             "TASKS_TABLE": tasks_table_name,
+            "AWS_ENDPOINT_URL_DYNAMODB": network.dynamodb_endpoint_url,
         }
         if gateway_url:
             runtime_env["BEDROCK_AGENTCORE_GATEWAY_URL"] = gateway_url
@@ -938,6 +1002,12 @@ class AgentStack(cdk.Stack):
             ),
             environment_variables=runtime_env,
         )
+        # AgentCore pulls the image during `CreateAgentRuntime`, but the runtime only
+        # references subnet, security group and role *ids* -- none of which waits for the
+        # ECR/S3 endpoints, the NAT route or the role's `DefaultPolicy`. Without these the
+        # first deploy races them and fails "Couldn't reach the container registry".
+        self.runtime.node.add_dependency(network.vpc)
+        self.runtime.node.add_dependency(self.execution_role)
         self.agent_runtime_arn: str = self.runtime.attr_agent_runtime_arn
 
         cdk.CfnOutput(self, "AgentRuntimeArn", value=self.agent_runtime_arn)

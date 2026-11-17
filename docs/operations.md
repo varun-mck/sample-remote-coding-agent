@@ -107,6 +107,12 @@ attaches a deny policy to the runtime execution role and the dispatcher role. Li
 
 ## Expected cost
 
-Idle infrastructure is roughly **$83–85/month** in us-east-1 with interface endpoints in one
-AZ (see `-c endpointAzCount=`). The $50 cap applies to Bedrock usage only, not the whole
-account.
+Idle infrastructure is roughly **$98–100/month** in us-east-1 with interface endpoints in one
+AZ (see `-c endpointAzCount=`). That includes S3 and DynamoDB *interface* endpoints (~$7.30
+each) alongside their free gateway endpoints, because accounts whose NACL guardrail strips
+public inbound rules drop every reply a gateway endpoint carries. The VPC always spans two AZs because AgentCore expects the
+runtime in at least two subnets; subnets are free, and the single NAT gateway and the
+endpoints stay in the first AZ, so the second AZ adds only inter-AZ data transfer
+($0.01/GB each way) for sessions placed there. `-c endpointAzCount=2` puts every
+interface endpoint in both AZs, about $58/month more. The $50 cap applies to Bedrock usage
+only, not the whole account.

@@ -50,16 +50,17 @@ from botocore.exceptions import ClientError, NoCredentialsError, NoRegionError
 
 LOG = logging.getLogger("rca_mcp.client")
 
-# The stack `infra/` deploys the HTTP API in, and the output it publishes the URL as.
+# The stack `infra/` deploys the task API in, and the output it publishes the URL as.
 # Pinned to `app.API_STACK_NAME` by `tests/test_grant_contract.py`, so the two move
 # together; the `Sample` prefix is there because this deployment shares an account with an
 # unrelated `CodingAgent*` fleet (see the comment on `app.API_STACK_NAME`).
 DEFAULT_STACK_NAME = "SampleCodingAgentApi"
 API_URL_OUTPUT_KEY = "ApiUrl"
 
-# API Gateway's SigV4 service name. The control plane is IAM-authorized, so the
-# operator's own credentials are the only authentication this server has.
-SERVICE = "execute-api"
+# The SigV4 service name of a Lambda function URL (`AWS_IAM` auth). The control plane is
+# IAM-authorized, so the operator's own credentials are the only authentication this server
+# has, and they need `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the router.
+SERVICE = "lambda"
 
 
 class RcaError(RuntimeError):
@@ -223,14 +224,14 @@ def _write_cache(url: str, *, stack_name: str, region: str, stack: Mapping[str, 
         LOG.warning("could not write the endpoint cache at %s (%s); carrying on", path, err)
 
 
-# `https://<api-id>.execute-api.<region>.amazonaws.com[/stage]`, the only shape API Gateway
-# issues. A custom domain names no region, and falls through to the ambient one.
-_EXECUTE_API_HOST = re.compile(r"^[a-z0-9]+\.execute-api\.([a-z0-9-]+)\.amazonaws\.com$")
+# `https://<url-id>.lambda-url.<region>.on.aws/`, the only shape Lambda issues for a
+# function URL. A custom domain names no region, and falls through to the ambient one.
+_FUNCTION_URL_HOST = re.compile(r"^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$")
 
 
 def _region_from_url(url: str) -> str | None:
-    """The region an `execute-api` URL names, or `None` for any other host."""
-    match = _EXECUTE_API_HOST.match(urllib.parse.urlsplit(url).hostname or "")
+    """The region a function URL names, or `None` for any other host."""
+    match = _FUNCTION_URL_HOST.match(urllib.parse.urlsplit(url).hostname or "")
     return match.group(1) if match else None
 
 
@@ -258,7 +259,7 @@ def resolve_endpoint(
     if override:
         # No session on this arm: the override exists so a hand-run server needs no
         # `cloudformation:DescribeStacks`, and `""` means "no opinion on the region".
-        # The URL's own region outranks the ambient `AWS_REGION`: an `execute-api` URL
+        # The URL's own region outranks the ambient `AWS_REGION`: a function URL
         # names the region it answers in, and signing for any other region returns 403.
         signing_region = (
             region or _env("RCA_REGION") or _region_from_url(override) or _env("AWS_REGION") or ""
@@ -339,7 +340,7 @@ def _from_cloudformation(session: Any, stack_name: str, region: str) -> str:
 
     raise SetupRequired(
         f"the stack {stack_name} exists in {region or 'the default region'} but carries no "
-        f"{API_URL_OUTPUT_KEY} output, so its HTTP API is not deployed. That is a half-finished "
+        f"{API_URL_OUTPUT_KEY} output, so its task API is not deployed. That is a half-finished "
         "deployment: re-run `make deploy EMAIL=...`, or set RCA_API_URL if you know the URL."
     )
 
@@ -401,7 +402,7 @@ class ApiClient:
 
         The resolved region *is* the SigV4 signing region (`_send` signs with
         `session.region_name`), so honouring a cache from another region without this
-        assignment is an `execute-api` request signed for the wrong region -- a bare 403,
+        assignment is a function URL request signed for the wrong region -- a bare 403,
         not a clean failure. A session already built for the old region is dropped.
         """
         self._endpoint, self._endpoint_source = url, source
@@ -449,8 +450,9 @@ class ApiClient:
 
         response = self._send(method, path, query=query, body=body)
         if response.status_code == 403 and self._endpoint_source == "cache" and not self._refreshed:
-            # A redeploy gives the HTTP API a new id, so a cached URL points at an API
-            # this account no longer has and API Gateway answers 403. Once per process,
+            # A redeploy that replaces the router gives its function URL a new id, so a
+            # cached URL points at a URL this account no longer has and Lambda answers
+            # 403. Once per process,
             # and only on 403: a 404 is a legitimate `NotFound` from the control plane
             # (`get_repository` of an unknown id) and invalidating on it would be wrong.
             LOG.warning("the cached endpoint answered 403; re-reading it from CloudFormation")

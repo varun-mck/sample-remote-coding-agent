@@ -45,6 +45,7 @@ _HANDLER_MODULES = (
     "runs",
     "tasks",
     "dispatcher",
+    "router",
 )
 
 

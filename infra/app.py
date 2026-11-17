@@ -54,7 +54,7 @@ AGENT_STACK_NAME = _DEFAULT_NAMES.agent
 GATEWAY_STACK_NAME = _DEFAULT_NAMES.gateway
 API_STACK_NAME = _DEFAULT_NAMES.api
 
-_DEFAULT_PLAN_MODEL = "global.anthropic.claude-opus-4-5-20251101-v1:0"
+_DEFAULT_PLAN_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 _DEFAULT_CODE_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 _DEFAULT_HAIKU_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -97,7 +97,6 @@ def _agent_zones(app: aws_cdk.App, region: str | None) -> list[str]:
     return select_agent_zones(
         region,
         [(zone["ZoneName"], zone["ZoneId"]) for zone in answer["AvailabilityZones"]],
-        count=_endpoint_az_count(app),
     )
 
 
@@ -129,6 +128,7 @@ def main() -> None:
         app_name=APP_NAME,
         alert_email=_context(app, "budgetAlertEmail", ""),
         availability_zones=_agent_zones(app, region),
+        endpoint_az_count=_endpoint_az_count(app),
         plan_model_id=_context(app, "planModelId", _DEFAULT_PLAN_MODEL),
         code_model_id=_context(app, "codeModelId", _DEFAULT_CODE_MODEL),
         haiku_model_id=_context(app, "haikuModelId", _DEFAULT_HAIKU_MODEL),

@@ -90,14 +90,16 @@ def test_every_entry_point_has_a_declared_grant_set() -> None:
     """One Lambda per entry point, and therefore one grant set per entry point: a
     function sharing a role with another gets the union of both, which is how a read
     route quietly acquires a write."""
-    expected = {(module, function) for _, _, module, function in api_stack.ROUTES} | set(
-        api_stack.QUEUE_ENTRY_POINTS
+    expected = (
+        {(module, function) for _, _, module, function in api_stack.ROUTES}
+        | set(api_stack.QUEUE_ENTRY_POINTS)
+        | {api_stack.ROUTER_ENTRY_POINT}
     )
     assert set(api_stack._ENTRY_POINT_GRANTS) == expected, (
         f"_ENTRY_POINT_GRANTS covers {sorted(set(api_stack._ENTRY_POINT_GRANTS) ^ expected)} "
         f"differently from the entry points ApiStack creates"
     )
-    assert len(expected) == 6, "four routes plus the dispatcher and DLQ handler"
+    assert len(expected) == 7, "four routes, the dispatcher, the DLQ handler and the router"
     for entry, capabilities in api_stack._ENTRY_POINT_GRANTS.items():
         unknown = set(capabilities) - api_stack._CAPABILITIES
         assert not unknown, (
@@ -561,6 +563,28 @@ _QUEUE_CONSUMED = {
     ("dispatcher", "lambda_handler"): "tasks-queue",
     ("dispatcher", "dlq_handler"): "tasks-dlq",
 }
+
+
+def test_the_router_can_invoke_routes_and_nothing_else() -> None:
+    """The router fronts the function URL for every route, so a data grant on it would be
+    every route's data grant at once -- the union `one Lambda per entry point` prevents."""
+    assert api_stack._ENTRY_POINT_GRANTS[api_stack.ROUTER_ENTRY_POINT] == ("routes:invoke",)
+    for entry, capabilities in api_stack._ENTRY_POINT_GRANTS.items():
+        if entry != api_stack.ROUTER_ENTRY_POINT:
+            assert "routes:invoke" not in capabilities, f"{entry} may not invoke the routes"
+
+
+def test_the_router_outlives_the_slowest_route() -> None:
+    assert api_stack._ROUTER_TIMEOUT_SECONDS > api_stack._ROUTE_TIMEOUT_SECONDS
+
+
+def test_the_api_is_an_iam_function_url_because_api_gateway_is_denied_by_scp() -> None:
+    """The organisation's SCPs deny `apigateway:*` and any function URL whose auth type is
+    not `AWS_IAM`; either regression is a `CREATE_FAILED` on the first deploy."""
+    source = (INFRA / "stacks/api_stack.py").read_text()
+    assert "aws_apigateway" not in source
+    assert "auth_type=lambda_.FunctionUrlAuthType.AWS_IAM" in source
+    assert mcp_client.SERVICE == "lambda"
 
 
 def test_exactly_the_self_chaining_consumers_opt_out_of_recursive_loop_detection() -> None:

@@ -95,10 +95,10 @@ def test_the_only_egress_the_agent_security_group_allows_is_443(template: Templa
     or a widened one, is invisible in a deploy log.
 
     The group is selected by its `GroupDescription` and never as "the only one": each of the
-    seven interface endpoints each get a security group of their own, so the template carries eight.
+    eight interface endpoints each get a security group of their own, so the template carries nine.
     """
     groups = _properties(template, "AWS::EC2::SecurityGroup")
-    assert len(groups) == 7, (
+    assert len(groups) == 9, (
         f"{len(groups)} security groups: the interface endpoints bring their own, so a "
         f"test that assumes one silently asserts against an endpoint's group instead"
     )
@@ -126,6 +126,27 @@ def test_the_only_egress_the_agent_security_group_allows_is_443(template: Templa
     )
 
 
+def test_every_subnet_has_an_acl_whose_inbound_rules_survive_the_nacl_guardrail(
+    template: Template,
+) -> None:
+    """The account guardrail deletes any inbound allow wider than a public /24, the default
+    ACL's allow-all included. What is left must still admit every reply the runtime needs,
+    which is why inbound is the VPC CIDR and all AWS traffic goes to interface endpoints."""
+    (acl_id,) = template.find_resources("AWS::EC2::NetworkAcl")
+    associations = _properties(template, "AWS::EC2::SubnetNetworkAclAssociation")
+    assert len(associations) == len(template.find_resources("AWS::EC2::Subnet"))
+    assert all(a["NetworkAclId"] == {"Ref": acl_id} for a in associations)
+
+    ingress = [
+        entry
+        for entry in _properties(template, "AWS::EC2::NetworkAclEntry")
+        if not entry.get("Egress")
+    ]
+    assert [entry["CidrBlock"] for entry in ingress] == [
+        {"Fn::GetAtt": [_vpc_ref(template)["Ref"], "CidrBlock"]}
+    ]
+
+
 def test_every_aws_call_that_carries_content_has_a_vpc_endpoint(template: Template) -> None:
     """The endpoints are what make "inside your boundary" demonstrable rather than asserted:
     without them the same traffic works fine over the NAT gateway and nothing says so. Both
@@ -137,7 +158,7 @@ def test_every_aws_call_that_carries_content_has_a_vpc_endpoint(template: Templa
     # already covers, and AgentCore Identity's own Secrets Manager write happens service-side
     # from a control-plane Lambda outside this VPC -- so an endpoint for it would be an ENI in
     # every AZ with no client.
-    template.resource_count_is("AWS::EC2::VPCEndpoint", 8)
+    template.resource_count_is("AWS::EC2::VPCEndpoint", 10)
     endpoints = _properties(template, "AWS::EC2::VPCEndpoint")
     names = [_service_name(endpoint["ServiceName"]) for endpoint in endpoints]
     for suffix in (
@@ -153,9 +174,27 @@ def test_every_aws_call_that_carries_content_has_a_vpc_endpoint(template: Templa
         ".bedrock-agentcore.gateway",
     ):
         assert any(name.endswith(suffix) for name in names), f"no endpoint for {suffix}: {names}"
-    # Gateway endpoints, and free: an ECR layer *is* an S3 object, which is why S3 is here.
+    # An ECR layer *is* an S3 object, which is why S3 is here. Both services also get an
+    # interface endpoint: a gateway routes to public addresses whose replies the account's
+    # NACL guardrail drops, so the interface endpoint is the path that actually works.
+    by_type: dict[str, set[str]] = {}
+    for endpoint, name in zip(endpoints, names, strict=True):
+        by_type.setdefault(endpoint.get("VpcEndpointType", "Gateway"), set()).add(name)
     for suffix in (".dynamodb", ".s3"):
-        assert any(name.endswith(suffix) for name in names), f"no endpoint for {suffix}: {names}"
+        for kind in ("Gateway", "Interface"):
+            assert any(n.endswith(suffix) for n in by_type.get(kind, ())), (
+                f"no {kind} endpoint for {suffix}: {by_type}"
+            )
+    (s3_interface,) = [
+        endpoint
+        for endpoint, name in zip(endpoints, names, strict=True)
+        if endpoint.get("VpcEndpointType") == "Interface" and name.endswith(".s3")
+    ]
+    # Without `AllResolvers`, in-VPC lookups of the ECR layer host go to the gateway.
+    assert s3_interface["PrivateDnsEnabled"] is True
+    assert s3_interface["DnsOptions"] == {
+        "PrivateDnsOnlyForInboundResolverEndpoint": "AllResolvers"
+    }
 
 
 def test_the_deny_list_names_every_vendor_domain_and_none_of_the_four_it_must_not(
@@ -337,3 +376,38 @@ def test_named_zones_are_the_ones_every_agent_subnet_lands_in(tmp_path: Path) ->
     # Public and agent subnets alike: the NAT gateway's public subnet has to share an AZ with
     # the private one it routes, and `Vpc` lays both tiers over the same list.
     assert sorted(subnet["AvailabilityZone"] for subnet in subnets) == sorted(zones * 2)
+
+
+@pytest.mark.parametrize("endpoint_az_count", [1, 2])
+def test_interface_endpoints_follow_endpoint_az_count_while_the_vpc_spans_two_zones(
+    tmp_path: Path, endpoint_az_count: int
+) -> None:
+    """AgentCore wants the runtime in at least two subnets, but every interface endpoint is
+    billed per AZ -- so the VPC always has two zones and the endpoints only as many as asked."""
+    app = aws_cdk.App(
+        outdir=str(tmp_path),
+        context={
+            "availability-zones:account=123456789012:region=us-east-1": [
+                name for name, _ in _SHUFFLED_ZONES
+            ]
+        },
+    )
+    stack = aws_cdk.Stack(
+        app, "Net", env=aws_cdk.Environment(account="123456789012", region="us-east-1")
+    )
+    zones = agent_stack.select_agent_zones("us-east-1", _SHUFFLED_ZONES)
+    assert len(zones) == 2
+    agent_stack.add_agent_network(
+        stack,
+        app_name=_APP_NAME,
+        alert_email=_ALERT_EMAIL,
+        availability_zones=zones,
+        endpoint_az_count=endpoint_az_count,
+    )
+    endpoints = [
+        endpoint
+        for endpoint in _properties(Template.from_stack(stack), "AWS::EC2::VPCEndpoint")
+        if endpoint.get("VpcEndpointType") == "Interface"
+    ]
+    assert endpoints
+    assert all(len(endpoint["SubnetIds"]) == endpoint_az_count for endpoint in endpoints)
