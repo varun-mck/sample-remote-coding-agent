@@ -32,9 +32,81 @@ same account. The plugin follows it through its `stack_name` setting (`RCA_STACK
 
 ## Provider credentials
 
-Create AgentCore Identity credential providers out of band with `make providers` (or
-`scripts/providers.sh`). Gateway outbound auth and the runtime's git push path share the same
-provider per host. Secrets never enter CloudFormation templates.
+Git hosts use **AgentCore Identity API key credential providers** (a stored PAT or app
+password), not a GitHub App or OAuth console wizard. The runtime reads them through
+`GetWorkloadAccessToken` + `GetResourceApiKey`. Gateway PR tools use the same provider per host.
+Secrets never enter CloudFormation templates.
+
+Default provider **names** (prefix `rca` = `APP_NAME` in `infra/app.py`):
+
+| Host | Identity provider name | Git HTTPS user |
+|------|------------------------|----------------|
+| `github.com` | `rca_github` | `x-access-token` |
+| `bitbucket.org` | `rca_bitbucket_cloud` | `x-token-auth` |
+
+Workload identity name: **`rca_git_wl`** (override with runtime env `IDENTITY_WORKLOAD_NAME`).
+
+### 1. Workload identity (once per account/region)
+
+```bash
+export AWS_REGION=us-east-1   # same region as the runtime
+
+aws bedrock-agentcore-control create-workload-identity --name rca_git_wl
+```
+
+### 2. GitHub — API key provider `rca_github`
+
+1. In GitHub, create a **fine-grained PAT** (or classic PAT) with **Contents** and **Pull
+   requests** read/write on the repositories the agent will use.
+2. Register the token with Identity (replace `ghp_...` — or pipe from a file instead of echo):
+
+```bash
+aws bedrock-agentcore-control create-api-key-credential-provider \
+  --name rca_github \
+  --api-key-secret-source MANAGED \
+  --api-key "$(printf '%s' 'ghp_YOUR_TOKEN')"
+```
+
+Alternatively, store the PAT in Secrets Manager first and pass `--api-key-secret-source EXTERNAL`
+with `--api-key-secret-config` (see
+[API key credential providers](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/resource-providers.html)).
+
+### 3. Bitbucket Cloud — API key provider `rca_bitbucket_cloud`
+
+1. In Bitbucket → **Personal settings** → **App passwords**, create a password with
+   **Repositories: Read/Write** (and pull requests if you open PRs).
+2. Register it:
+
+```bash
+aws bedrock-agentcore-control create-api-key-credential-provider \
+  --name rca_bitbucket_cloud \
+  --api-key-secret-source MANAGED \
+  --api-key "$(printf '%s' 'YOUR_APP_PASSWORD')"
+```
+
+### 4. Verify
+
+```bash
+WAT=$(aws bedrock-agentcore get-workload-access-token \
+  --workload-name rca_git_wl --query workloadAccessToken --output text)
+
+aws bedrock-agentcore get-resource-api-key \
+  --workload-identity-token "$WAT" \
+  --resource-credential-provider-name rca_github \
+  --scopes repository --query apiKey --output text
+```
+
+Repeat with `rca_bitbucket_cloud` when using Bitbucket.
+
+### 5. Gateway (for create-PR tools)
+
+In the console, open **AgentCore → Gateway →** `rca-gateway`, edit the **github** and
+**bitbucket-cloud** targets, and set **outbound auth** to the matching **API key** credential
+provider ARN (`rca_github` / `rca_bitbucket_cloud`). Git clone/push inside the runtime does not
+need this step; opening PRs through Gateway does.
+
+**Network:** cloning still needs reachable `github.com` / `bitbucket.org` from the VPC (NAT). The
+account NACL guardrail may block that until platform grants an exception.
 
 ## Claude Code plugin
 

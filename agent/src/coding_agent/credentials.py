@@ -12,8 +12,6 @@ from .providers import Provider
 log = logging.getLogger(__name__)
 
 _DEFAULT_WORKLOAD = "rca_git_wl"
-_OAUTH_FLOW = "MACHINE_TO_MACHINE"
-_API_KEY_FLOW = "API_KEY"
 
 
 def _client():
@@ -38,7 +36,9 @@ def fetch_token(provider: Provider) -> str:
         token = wl.get("workloadAccessToken", "")
         if not token:
             return ""
-        if provider.kind == "bitbucket-cloud":
+        # GitHub and Bitbucket Cloud both use an AgentCore Identity *API key* credential
+        # provider (PAT / app password), not OAuth or a GitHub App install flow.
+        if provider.kind in ("github", "bitbucket-cloud"):
             resp = _client().get_resource_api_key(
                 workloadIdentityToken=token,
                 resourceCredentialProviderName=name,
@@ -49,7 +49,7 @@ def fetch_token(provider: Provider) -> str:
             workloadIdentityToken=token,
             resourceCredentialProviderName=name,
             scopes=["repository"],
-            oauth2Flow=_OAUTH_FLOW,
+            oauth2Flow="MACHINE_TO_MACHINE",
         )
         return str(resp.get("accessToken") or "")
     except (ClientError, BotoCoreError):

@@ -12,10 +12,11 @@ it.
 
 ## Git access: AgentCore Identity and Gateway
 
-No long-lived token is stored in this repository. Each Git host you configure gets one AgentCore
-Identity credential provider (`make providers`). The runtime fetches short-lived credentials at
-push time through `credentials.fetch_token`; Gateway uses the same provider for create-PR API
-calls. Configure provider secrets out of band only.
+No long-lived token is stored in this repository. Each Git host gets one AgentCore Identity
+**API key credential provider** (`rca_github`, `rca_bitbucket_cloud`, … — see
+`docs/operations.md`). The runtime loads the key at git time through `credentials.fetch_token`;
+Gateway uses the same provider for create-PR API calls. Configure keys out of band only (PAT /
+app password in Identity, not in task bodies).
 
 Install OAuth apps or tokens with the narrowest scope that can open a pull request on the
 repositories you allow (`REPOSITORY_ALLOWLIST` when set).
