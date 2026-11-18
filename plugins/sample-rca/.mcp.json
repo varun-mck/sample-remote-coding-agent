@@ -3,6 +3,8 @@
     "remote-coding-agent": {
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--from",
         "git+https://github.com/aws-samples/sample-remote-coding-agent@b924f7867467806c316d6125503bc2b611c93364#subdirectory=mcp",
         "rca-mcp"

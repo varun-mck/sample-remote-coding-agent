@@ -4,6 +4,8 @@
       "command": "uv",
       "args": [
         "run",
+        "--python",
+        "3.12",
         "--directory",
         "mcp",
         "rca-mcp"
