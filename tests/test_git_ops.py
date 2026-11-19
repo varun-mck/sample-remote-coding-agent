@@ -469,6 +469,28 @@ def test_the_askpass_script_answers_both_prompts() -> None:
     assert not directory.exists(), "removed in `finally`, so nothing durable holds the PAT"
 
 
+def test_kiro_git_env_installs_persistent_askpass(tmp_path: Path) -> None:
+    repo = make_git_repo(tmp_path / "repo")
+    trust(repo)
+    env = git_ops.kiro_git_env(
+        repo=repo,
+        token=_TOKEN,
+        askpass_dir=tmp_path / "askpass",
+        username="x-access-token",
+    )
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    script = Path(env["GIT_ASKPASS"])
+    assert script.is_file()
+    assert _TOKEN not in os.environ.get("GIT_ASKPASS", "")
+    password = subprocess.run(
+        [str(script), "Password for 'https://github.com': "],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert password.stdout == _TOKEN
+
+
 def test_checkout_branch_tracks_origin(tmp_path: Path) -> None:
     """Fleet tasks check out a branch that already exists on the remote."""
     origin = make_git_repo(tmp_path / "origin")

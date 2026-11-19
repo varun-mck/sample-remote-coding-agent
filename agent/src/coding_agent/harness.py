@@ -176,6 +176,12 @@ async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             workspace=repo_dir,
             stream_log=stream_log,
             bridge_log=bridge_log,
+            git_env=git_ops.kiro_git_env(
+                repo=repo_dir,
+                token=token or None,
+                askpass_dir=agent_dir / "git-askpass",
+                username=ref.provider.git_username,
+            ),
         )
 
     _tail_bridge_log(bridge_log)

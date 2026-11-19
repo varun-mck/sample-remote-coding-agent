@@ -113,10 +113,13 @@ def run_kiro(
     workspace: Path,
     stream_log: Path,
     bridge_log: Path,
+    git_env: dict[str, str] | None = None,
 ) -> KiroRunResult:
     write_agent_profile(kiro_home)
     api_key = fetch_kiro_api_key()
     env = os.environ.copy()
+    if git_env:
+        env.update(git_env)
     env["KIRO_HOME"] = str(kiro_home)
     env["RCA_BRIDGE_LOG"] = str(bridge_log)
     if api_key:

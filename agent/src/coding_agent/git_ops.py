@@ -310,6 +310,44 @@ def current_branch(repo: Path) -> str:
     return out.strip()
 
 
+def materialize_askpass_dir(
+    directory: Path, token: str, *, username: str = "x-access-token"
+) -> Path:
+    """Persistent `GIT_ASKPASS` tree for child processes (e.g. Kiro shell), not this process.
+
+    The token lives only in ``directory/token`` (mode 0600); the parent env gets
+    ``GIT_ASKPASS`` pointing at the script path, not the secret itself.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    token_file = directory / "token"
+    token_file.write_text(token, encoding="utf-8")
+    token_file.chmod(0o600)
+    user_file = directory / "username"
+    user_file.write_text(username, encoding="utf-8")
+    user_file.chmod(0o600)
+    script = directory / "askpass.sh"
+    script.write_text(_ASKPASS_SCRIPT, encoding="utf-8")
+    script.chmod(0o700)
+    return script
+
+
+def kiro_git_env(
+    *,
+    repo: Path,
+    token: str | None,
+    askpass_dir: Path,
+    username: str = "x-access-token",
+) -> dict[str, str]:
+    """Environment patch so Kiro's shell git commands authenticate like harness git."""
+    trust_directory(repo)
+    env = dict(git_config_env())
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if token:
+        env["GIT_ASKPASS"] = str(materialize_askpass_dir(askpass_dir, token, username=username))
+    return env
+
+
 @contextlib.contextmanager
 def _askpass(token: str, *, username: str = "x-access-token") -> Iterator[Path]:
     """Yield the path of a throwaway `GIT_ASKPASS` script that prints `token`.
