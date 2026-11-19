@@ -16,6 +16,8 @@ from .state import TaskState, TaskStatus
 
 log = logging.getLogger(__name__)
 
+_RESULT_MAX_BYTES = 60_000
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -81,16 +83,21 @@ def set_status(
         log.warning("could not write status %s for task %s: %s", status, key["taskId"], exc)
 
 
+def truncate_result(text: str) -> str:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= _RESULT_MAX_BYTES:
+        return text
+    return encoded[:_RESULT_MAX_BYTES].decode("utf-8", errors="ignore") + "\n…(truncated)"
+
+
 def record_result(
     state: TaskState,
     *,
     status: TaskStatus,
-    pr_url: str | None = None,
-    verify_result: Mapping[str, Any] | None = None,
+    result: str | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
-    extra: dict[str, Any] = {}
-    if pr_url:
-        extra["prUrl"] = pr_url
-    if verify_result is not None:
-        extra["verifyResult"] = dict(verify_result)
-    set_status(state, status, extra=extra)
+    payload: dict[str, Any] = dict(extra or {})
+    if result is not None:
+        payload["result"] = truncate_result(result)
+    set_status(state, status, extra=payload)

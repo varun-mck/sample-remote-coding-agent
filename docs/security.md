@@ -1,69 +1,27 @@
-# Security and data boundary
+# Security
 
-**Deploy this into a dedicated AWS account.** The agent runs code it did not write: a
-repository's own `setupCommand` and verification command. The account boundary is the outermost
-fence.
+## Credentials
 
-## Only register repositories you trust
+- Git tokens flow only through `GIT_ASKPASS` (`git_ops._askpass`); they are not logged or
+  placed in environment variables for the Kiro process beyond the askpass script lifetime.
+- Kiro API key: Secrets Manager `rca/kiro-api-key` (or `KIRO_API_KEY` for local dev only).
+- Task API: IAM SigV4 on the Lambda function URL; no API keys in requests.
 
-This system clones a repository, points a model with unrestricted `Bash` at it, and runs the
-repository's own setup and test commands. Everything below bounds blast radius; nothing removes
-it.
+## Agent capabilities
 
-## Git access: AgentCore Identity and Gateway
+The fleet `rca` agent may:
 
-No long-lived token is stored in this repository. Each Git host gets one AgentCore Identity
-**API key credential provider** (`rca_github`, `rca_bitbucket_cloud`, … — see
-`docs/operations.md`). The runtime loads the key at git time through `credentials.fetch_token`;
-Gateway uses the same provider for create-PR API calls. Configure keys out of band only (PAT /
-app password in Identity, not in task bodies).
+- Read/write files in the cloned repo
+- Run shell commands in the repo (including verify commands you configure)
+- Call AgentCore Gateway MCP tools (Git host, Jira, Confluence, …)
 
-Install OAuth apps or tokens with the narrowest scope that can open a pull request on the
-repositories you allow (`REPOSITORY_ALLOWLIST` when set).
+It must not merge or approve pull requests (prompt policy). Outcomes are not gated on opening a PR.
 
-Turn on branch protection on the default branch. The agent pushes only `agent/<taskId>` and opens
-a pull request; protection limits what a compromised run can merge without a person.
+## Network
 
-## The data boundary
+Runtime network mode is **PUBLIC** (no VPC). Egress reaches Git hosts, Gateway, AWS APIs, and
+Kiro endpoints configured in the image.
 
-Inference runs on Bedrock in your account. Bedrock does not retain prompts or completions for
-model training. Nothing in this sample exports vendor telemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=0`).
+## Data
 
-### How it is enforced
-
-- **`WebFetch` and `WebSearch` are not in the toolset** (`options.py`).
-- **`setting_sources=[]` and `strict_mcp_config=True`:** only harness MCP and configured Gateway
-  stdio servers are available.
-- **`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`:** Claude Code's container-scoped auto-memory stays off.
-  There is no AgentCore Memory in this fleet runtime; task history lives in DynamoDB only.
-- **Git credentials never enter the environment** (invariant 3).
-- **Publishing is harness-owned:** `publish_branch` and Gateway create-PR tools, with hooks that
-  force draft when `run_verification` did not pass.
-
-`tests/test_env_contract.py` and `tests/test_options.py` hold the runtime surface.
-
-## Prompt guardrail
-
-A Bedrock guardrail screens every task prompt in `runs.screen_prompt` before queueing. A blocked
-prompt returns HTTP **422** with `"PromptBlockedByGuardrail"`. An `ApplyGuardrail` outage returns
-**503** with `"GuardrailUnavailable"`.
-
-The stack enables input-only policies at `LOW` for `PROMPT_ATTACK`, `MISCONDUCT`, and
-`AWS_ACCESS_KEY`, plus secret-shaped regexes (`infra/stacks/prompt_guardrail.py`). Refusals name
-policy types, never matched text. `-c guardrailEnabled=false` turns screening off.
-
-## What remains exposed
-
-- **Execution-role credentials inside the container.** Repository commands use a minimal
-  environment, but code can still reach the instance metadata path. The boundary and VPC egress
-  limit what those credentials can do.
-- **Prompt injection through repository content.** Malicious setup or test scripts still run by
-  design. Use a dedicated account, allowlisted repositories, and branch protection.
-- **Gateway tool surface.** Hooks deny merge, approve, delete, and direct `git push`; only
-  allowlisted provider tools are rewritten for draft and branch pinning. Misconfigured Gateway
-  targets widen API access.
-
-## Static analysis suppressions
-
-Dependency suppressions for `pip-audit` and similar tools live beside the lockfiles they guard.
-They document accepted risk, not silent ignores.
+Task rows live in DynamoDB (`Tasks` table). No AgentCore Memory in this fleet.

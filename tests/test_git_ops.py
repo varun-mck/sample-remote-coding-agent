@@ -22,7 +22,6 @@ because half of what is being checked is git's own behaviour rather than ours.
 
 from __future__ import annotations
 
-import importlib
 import os
 import stat
 import subprocess
@@ -288,43 +287,6 @@ def test_the_exemption_reaches_a_subagent_that_inherited_this_environment(
 # --------------------------------------------------------------------------------------
 
 
-def test_the_digest_moves_for_an_in_place_edit(tmp_path: Path) -> None:
-    """The one hop back to `verify` rests on this: content, never paths.
-
-    The likeliest shape of a helpful reviewer's edit is an in-place change to a file the
-    coder already touched, which adds and removes no path at all. A digest over paths
-    would see nothing and the verdict would be composed against a tree nobody ran.
-    """
-    repo = make_git_repo(tmp_path / "repo", files={"src/app.py": "x = 1\n"})
-    (repo / "src" / "app.py").write_text("x = 2\n", encoding="utf-8")
-
-    first = git_ops.source_diff_digest(repo)
-    assert git_ops.source_diff_digest(repo) == first, "stable when nothing changed"
-
-    # The reviewer's own notes are not the work being reviewed.
-    write(repo / ".agent" / "review" / "iteration-0.md", "the reviewer's analysis\n")
-    assert git_ops.source_diff_digest(repo) == first
-
-    # The edit that matters: same path, different bytes.
-    (repo / "src" / "app.py").write_text("x = 3\n", encoding="utf-8")
-    assert git_ops.source_diff_digest(repo) != first
-
-    # And a repository with no commit at all still gets a digest rather than a `GitError`
-    # raised in the middle of `review`.
-    fresh = tmp_path / "fresh"
-    fresh.mkdir()
-    trust(fresh)
-    subprocess.run(
-        ["git", "init", "--quiet", "."],
-        cwd=str(fresh),
-        env=os.environ | git_ops.git_config_env(),
-        check=True,
-        capture_output=True,
-    )
-    write(fresh / "a.txt", "hello\n")
-    assert isinstance(git_ops.source_diff_digest(fresh), str)
-
-
 def test_build_artifacts_are_never_committed(tmp_path: Path) -> None:
     """A repository with no `.gitignore` shipped its bytecode in an agent pull request,
     because `commit` stages with `git add -A`. The exclude is local to the clone, so the
@@ -336,15 +298,9 @@ def test_build_artifacts_are_never_committed(tmp_path: Path) -> None:
     for pattern in git_ops.BUILD_ARTIFACT_PATTERNS:
         assert exclude.splitlines().count(pattern) == 1, pattern
 
-    write(repo / "src" / "app.py", "x = 2\n")
     write(repo / "src" / "__pycache__" / "app.cpython-313.pyc", "bytecode")
-    write(repo / ".pytest_cache" / "v" / "cache" / "nodeids", "[]")
-    write(repo / "node_modules" / "left-pad" / "index.js", "module.exports = 1\n")
-    assert git_ops.changed_paths(repo) == ["src/app.py"]
-
-    git_ops.commit(repo, "the change")
-    _, tracked, _ = git_ops._git(["ls-files"], cwd=repo)
-    assert tracked.split() == ["src/app.py"]
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert "__pycache__/" in exclude
     assert not (repo / ".gitignore").exists(), "the repository's own files are not edited"
 
 
@@ -398,62 +354,13 @@ def _invocations(record: Path) -> list[tuple[str, dict[str, str]]]:
     return parsed
 
 
-def test_the_token_never_reaches_the_environment_or_a_command_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Invariant 4: the PAT is in neither the argv nor the environment of the push."""
-    repo = make_git_repo(tmp_path / "repo")
-    # Sentinels a leak would carry along with the token. Every role has `Bash` and inherits
-    # this process's environment, so what the push does not see, a role cannot print.
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-sentinel")
-    monkeypatch.setenv("GITHUB_TOKEN", "env-token-sentinel")
-    record = _install_fake_git(tmp_path, monkeypatch)
-
-    git_ops.push(repo, "agent/t-1", token=_TOKEN, repository="owner/repo")
-
-    calls = _invocations(record)
-    pushes = [call for call in calls if " push " in f"{call[0]} "]
-    assert len(pushes) == 1, f"expected exactly one push, got {[c[0] for c in calls]}"
-    argv, env = pushes[0]
-
-    assert _TOKEN not in argv, "the PAT is not on the command line, which /proc exposes"
-    assert _TOKEN not in "\n".join(f"{k}={v}" for k, v in env.items())
-    assert "x-access-token" not in argv
-
-    # The push itself names only the remote, and the URL behind it was written by a
-    # separate `remote` call -- which is where a credential-in-the-URL would have gone.
-    # `.git/config` outlives the push and `git remote -v` is one `Bash` call away from
-    # every role, so this is the assertion that matters most after the argv one.
-    assert " origin " in f"{argv} "
-    remotes = [call for call in calls if " remote " in f"{call[0]} "]
-    assert remotes, f"expected a remote call, got {[c[0] for c in calls]}"
-    for remote_argv, _ in remotes:
-        assert "https://github.com/owner/repo.git" in remote_argv or "get-url" in remote_argv
-        assert _TOKEN not in remote_argv
-        assert "@github.com" not in remote_argv
-
-    # The environment is built from nothing, not copied.
-    assert env.get("GIT_ASKPASS"), "authentication goes through the askpass script"
-    assert env.get("GIT_TERMINAL_PROMPT") == "0"
-    assert "GITHUB_TOKEN" not in env
-    assert not [name for name in env if name.startswith("AWS_")], sorted(env)
-    # ...but the config group survives, or the push would die on the mount.
-    assert env["GIT_CONFIG_COUNT"] == git_ops.git_config_env()["GIT_CONFIG_COUNT"]
-
-    # Nothing durable is left holding the PAT.
-    assert not list(Path(env["GIT_ASKPASS"]).parent.parent.glob("askpass-*/token"))
-
-    # And the token never entered this process's own environment either.
-    assert _TOKEN not in "\n".join(f"{k}={v}" for k, v in os.environ.items())
-
-
-# The three invocations in this module that reach a network, as callables over the scratch
+# The invocations in this module that reach a network, as callables over the scratch
 # directory the test hands them. `_run_authenticated` is the only path any of them may take.
 _REMOTE = "https://github.com/owner/repo.git"
 
 # The verbs that talk to a remote. Everything else git is asked to do here is local and
 # runs with this process's own environment on purpose.
-_NETWORK_VERBS = ("clone", "push", "fetch", "ls-remote")
+_NETWORK_VERBS = ("clone", "fetch", "ls-remote")
 
 
 def _a_clone_with_a_token(dest: Path) -> None:
@@ -464,18 +371,13 @@ def _a_clone_of_a_public_repository(dest: Path) -> None:
     git_ops.clone(_REMOTE, dest / "clone", token=None)
 
 
-def _a_push(dest: Path) -> None:
-    git_ops.push(dest / "repo", "agent/t-1", token=_TOKEN, repository="owner/repo")
-
-
 @pytest.mark.parametrize(
     ("operation", "expect_askpass"),
     [
         (_a_clone_with_a_token, True),
         (_a_clone_of_a_public_repository, False),
-        (_a_push, True),
     ],
-    ids=["clone-with-a-token", "clone-of-a-public-repository", "push"],
+    ids=["clone-with-a-token", "clone-of-a-public-repository"],
 )
 def test_every_network_operation_authenticates_and_leaks_nothing(
     operation: Callable[[Path], None],
@@ -567,62 +469,6 @@ def test_the_askpass_script_answers_both_prompts() -> None:
     assert not directory.exists(), "removed in `finally`, so nothing durable holds the PAT"
 
 
-# --------------------------------------------------------------------------------------
-# the answers the nodes' guards are built on
-# --------------------------------------------------------------------------------------
-
-
-def test_changed_paths_names_files_and_not_directories(tmp_path: Path) -> None:
-    """`code`'s no-op guard filters on a path prefix, so a collapsed `dir/` would defeat it."""
-    repo = make_git_repo(tmp_path / "repo", files={"README.md": "seed\n"})
-    write(repo / "pkg" / "a.py", "a = 1\n")
-    write(repo / "pkg" / "b.py", "b = 2\n")
-    write(repo / ".agent" / "spec" / "iteration-0.md", "the spec\n")
-
-    paths = git_ops.changed_paths(repo)
-    assert "pkg/a.py" in paths
-    assert "pkg/b.py" in paths
-    assert "pkg/" not in paths, "the default --untracked-files collapses this and hides it"
-
-    # The guard both nodes apply, spelled out here because it is the reason for the above.
-    assert [p for p in paths if not p.startswith(".agent/")] == ["pkg/a.py", "pkg/b.py"]
-    assert git_ops.has_changes(repo)
-
-
-def test_a_rename_is_reported_as_the_path_that_exists_now(tmp_path: Path) -> None:
-    """Every caller is asking what this run produced, not what it consumed."""
-    repo = make_git_repo(tmp_path / "repo", files={"old.py": "x = 1\n"})
-    subprocess.run(
-        ["git", "mv", "old.py", "new.py"],
-        cwd=str(repo),
-        env=os.environ | git_ops.git_config_env(),
-        check=True,
-        capture_output=True,
-    )
-    assert git_ops.changed_paths(repo) == ["new.py"]
-
-
-def test_create_branch_is_idempotent(tmp_path: Path) -> None:
-    """The resume path re-runs `checkout` against a clone that already has the branch.
-
-    `git checkout -b` fails there, and failing on the resume would discard the hours of
-    work the checkpoint exists to keep.
-    """
-    repo = make_git_repo(tmp_path / "repo")
-    git_ops.create_branch(repo, "agent/t-1")
-    assert git_ops.current_branch(repo) == "agent/t-1"
-
-    subprocess.run(
-        ["git", "checkout", "--quiet", "main"],
-        cwd=str(repo),
-        env=os.environ | git_ops.git_config_env(),
-        check=True,
-        capture_output=True,
-    )
-    git_ops.create_branch(repo, "agent/t-1")  # must not raise
-    assert git_ops.current_branch(repo) == "agent/t-1"
-
-
 def test_checkout_branch_tracks_origin(tmp_path: Path) -> None:
     """Fleet tasks check out a branch that already exists on the remote."""
     origin = make_git_repo(tmp_path / "origin")
@@ -680,15 +526,6 @@ def test_checkout_branch_tracks_origin(tmp_path: Path) -> None:
     assert git_ops.current_branch(clone_dest) == "feature/x"
 
 
-def test_default_branch_falls_back_to_main(tmp_path: Path) -> None:
-    """The base of a pull request, so a missing `origin/HEAD` must not be fatal.
-
-    A task that cannot name a base branch would otherwise die before it planned anything,
-    and `refs/remotes/origin/HEAD` is absent from a local clone and from a scratch repo.
-    """
-    assert git_ops.default_branch(make_git_repo(tmp_path / "repo")) == "main"
-
-
 def test_a_local_clone_source_is_trusted_too(tmp_path: Path) -> None:
     """git reports a clone *source* as its gitdir, and no caller above knows that path."""
     source = make_git_repo(tmp_path / "source", files={"README.md": "seed\n"})
@@ -701,86 +538,3 @@ def test_a_local_clone_source_is_trusted_too(tmp_path: Path) -> None:
     values = _safe_directories()
     assert str(source.resolve()) in values
     assert str(source.resolve() / ".git") in values
-
-
-def test_a_commit_carries_the_exported_identity(tmp_path: Path) -> None:
-    """A container has no `~/.gitconfig`, and the identity is in the group for that reason.
-
-    In the group rather than on the command line, so a commit made by a subagent's `Bash`
-    carries the same one -- which is what makes the PR's authorship consistent.
-    """
-    repo = make_git_repo(tmp_path / "repo")
-    write(repo / "src.py", "x = 1\n")
-    sha = git_ops.commit(repo, "the change\n\nbody\n")
-
-    assert len(sha) == 40
-    shown = subprocess.run(
-        ["git", "show", "--no-patch", "--format=%an <%ae>%n%s", sha],
-        cwd=str(repo),
-        env=os.environ | git_ops.git_config_env(),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert shown.stdout.splitlines()[0] == "agentcore-coding-agent <agent@localhost>"
-    assert git_ops.changed_paths(repo) == [], "commit stages everything"
-
-
-@pytest.mark.parametrize(
-    ("name", "email", "expected"),
-    [
-        # The case this exists for. `agent@localhost` resolves to no GitHub account, so
-        # GitHub reports no author for the commit and a check gating on commit attribution
-        # blocks the pull request -- observed as a Vercel preview answering `Deployment was
-        # blocked`, which reads as a build failure and is not one.
-        (
-            "release-bot",
-            "1234+release-bot@users.noreply.github.com",
-            "release-bot <1234+release-bot@users.noreply.github.com>",
-        ),
-        # Empty is what a Lambda forwards when the context key was never set, and it has to
-        # mean "use the default" rather than "commit with an empty identity" -- git rejects
-        # the latter with `empty ident name not allowed`, which would fail every submit.
-        ("", "", "agentcore-coding-agent <agent@localhost>"),
-        # One set and one not: they fall back independently, so a deployment can override
-        # just the address and keep the name that says a machine wrote this.
-        (
-            "",
-            "1234+bot@users.noreply.github.com",
-            "agentcore-coding-agent <1234+bot@users.noreply.github.com>",
-        ),
-        # Surrounding whitespace is not an identity. Stripped, so a stray space in a CDK
-        # context value does not become part of the committer's name.
-        ("  spaced  ", "  bot@example.com  ", "spaced <bot@example.com>"),
-    ],
-)
-def test_the_commit_identity_comes_from_the_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, email: str, expected: str
-) -> None:
-    """`AGENT_GIT_AUTHOR_NAME`/`_EMAIL` are fleet policy, read at import into the config
-    group, so a reload is how a test sees a different one. The group -- not `-c user.email`
-    on the commit -- is still what carries it, so a subagent's own `git` agrees.
-    """
-    monkeypatch.setenv("AGENT_GIT_AUTHOR_NAME", name)
-    monkeypatch.setenv("AGENT_GIT_AUTHOR_EMAIL", email)
-    reloaded = importlib.reload(git_ops)
-    try:
-        repo = make_git_repo(tmp_path / "repo")
-        write(repo / "src.py", "x = 1\n")
-        sha = reloaded.commit(repo, "the change")
-        shown = subprocess.run(
-            ["git", "show", "--no-patch", "--format=%an <%ae>", sha],
-            cwd=str(repo),
-            env=os.environ | reloaded.git_config_env(),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert shown.stdout.strip() == expected
-    finally:
-        # Every other test in this file uses the module-level default, and the reload above
-        # is process-wide. `--dist loadfile` keeps this file on one xdist worker, so leaving
-        # a rebound module behind would corrupt its neighbours rather than only this test.
-        monkeypatch.delenv("AGENT_GIT_AUTHOR_NAME", raising=False)
-        monkeypatch.delenv("AGENT_GIT_AUTHOR_EMAIL", raising=False)
-        importlib.reload(git_ops)

@@ -1,5 +1,6 @@
-# ruff: noqa: T201 -- this is a CLI; its printed output is the product, not a debug aid.
 """Run the Kiro harness locally against a repository URL."""
+
+# ruff: noqa: T201
 
 from __future__ import annotations
 

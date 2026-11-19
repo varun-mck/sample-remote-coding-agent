@@ -24,11 +24,10 @@ TASK_STATUSES = (
     "DISPATCHED",
     "RUNNING",
     "SUCCEEDED",
-    "SUCCEEDED_UNVERIFIED",
     "FAILED",
     "CANCELLED",
 )
-TERMINAL_STATUSES = frozenset({"SUCCEEDED", "SUCCEEDED_UNVERIFIED", "FAILED", "CANCELLED"})
+TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
 
 _REPO_URL = re.compile(r"^https?://[^/]+/.+/.+|^git@[^:]+:.+/.+")
 

@@ -54,10 +54,6 @@ AGENT_STACK_NAME = _DEFAULT_NAMES.agent
 GATEWAY_STACK_NAME = _DEFAULT_NAMES.gateway
 API_STACK_NAME = _DEFAULT_NAMES.api
 
-_DEFAULT_PLAN_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-_DEFAULT_CODE_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-_DEFAULT_HAIKU_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-
 
 def _context(app: aws_cdk.App, key: str, default: str) -> str:
     value = app.node.try_get_context(key)
@@ -102,6 +98,7 @@ def main() -> None:
         git_author_name=_context(app, "gitAuthorName", ""),
         git_author_email=_context(app, "gitAuthorEmail", ""),
         gateway_url=gateway.gateway_url,
+        gateway_arn=gateway.gateway_arn,
         tasks_table_name=data.tasks.table_name,
         env=env,
     )

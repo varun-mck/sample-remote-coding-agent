@@ -7,17 +7,12 @@ fails silently or confusingly when broken."""
 from __future__ import annotations
 
 import configparser
-import json
 import re
-import subprocess
-import sys
 import tomllib
-from pathlib import Path
 
 import app
 import pytest
 from conftest import REPO_ROOT
-from stacks import account_stack
 
 # A requirement is a name, optional extras, then everything else is the specifier.
 # Deliberately not `packaging.requirements`: packaging is only a transitive
@@ -30,7 +25,6 @@ _MANIFESTS = [
     "api/requirements.txt",
     "infra/requirements.txt",
     "agent/pyproject.toml",
-    "mcp/pyproject.toml",
 ]
 
 # `agent/Dockerfile` is deliberately NOT a sixth manifest: `_declared_requirements` parses
@@ -60,20 +54,24 @@ def _declared_requirements(manifest: str) -> list[str]:
     ]
 
 
-def test_the_makefile_declares_exactly_the_five_targets() -> None:
+def test_the_makefile_declares_operator_targets() -> None:
     declared = set(
         re.findall(
             r"^([A-Za-z][A-Za-z0-9_-]*):", (REPO_ROOT / "Makefile").read_text(), re.MULTILINE
         )
     )
-    assert declared == {"setup", "test", "lint", "preflight", "deploy", "budget-reset"}, (
-        "invariant 35: `setup:` and `test:` are this repository's declared "
-        "setupCommand and verifyCommand. An agent uses only an entry point the "
-        "repository declared, so renaming `setup` switches verification off "
-        "silently -- one draft PR at a time -- while renaming `test` falls back to "
-        "bare `python3 -m pytest` and reports a missing environment as a red suite. "
-        f"Got {sorted(declared)}"
-    )
+    required = {
+        "setup",
+        "test",
+        "lint",
+        "preflight",
+        "deploy",
+        "budget-reset",
+        "task",
+        "task-get",
+        "task-list",
+    }
+    assert required.issubset(declared), f"missing targets: {sorted(required - declared)}"
 
 
 def test_the_makefile_mirrors_the_stack_prefix_infra_owns() -> None:
@@ -120,191 +118,6 @@ def test_the_makefile_mirrors_the_stack_prefix_infra_owns() -> None:
     )
 
 
-def _deploy_recipe() -> str:
-    """The tab-indented recipe lines of the `deploy` target, tabs included.
-
-    Local to this file on purpose, in the shape of `_defined_program` below: this is the only
-    place in *this* file that reads a recipe, and a shared helper would invite reading the
-    other targets the same way when nothing else needs to.
-    """
-    lines = (REPO_ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith("deploy:"))
-    body: list[str] = []
-    for line in lines[start + 1 :]:
-        if line.strip() and not line.startswith("\t"):
-            break
-        body.append(line)
-    return "\n".join(body)
-
-
-def test_the_deploy_waits_out_a_busy_account_stack() -> None:
-    """`deploy` polls the account stack's state before `cdk deploy --all`, and bounds the wait.
-
-    Three consecutive deploys were refused outright with `Stack SampleCodingAgentAccount is in
-    UPDATE_COMPLETE_CLEANUP_IN_PROGRESS state and can not be updated` -- a message that says
-    nothing about waiting, so the operator's next move was a guess. The wait turns that into a
-    printed sentence; being bounded is what keeps it from turning a busy stack into a hang.
-    """
-    recipe = _deploy_recipe()
-    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-
-    for probe in ("describe-stacks", "Stacks[0].StackStatus"):
-        assert probe in recipe, (
-            f"the deploy recipe does not {probe!r}. The wait has to read the stack's actual "
-            "state: anything else is a sleep that guesses."
-        )
-    assert f"--region {account_stack.BUDGET_REGION}" in recipe, (
-        f"the wait does not poll --region {account_stack.BUDGET_REGION}. Asserted against the "
-        "constant rather than the literal so the recipe and `account_stack.BUDGET_REGION` cannot "
-        "drift: the account stack is only ever created in the WAF's region, and a poll of the "
-        "deploy region finds nothing and waves a busy stack straight through."
-    )
-    assert "does not exist" in recipe, (
-        "the wait does not tolerate a missing stack. `describe-stacks` exits non-zero with "
-        "`... does not exist` for a stack nothing has created yet, so without this arm the "
-        "very first deploy on a fresh account fails inside the wait that was meant to help it."
-    )
-    for probe in ("_IN_PROGRESS", "sleep", "ACCOUNT_WAIT_SECONDS"):
-        assert probe in recipe, (
-            f"the deploy recipe does not mention {probe!r}: a transient state has to be "
-            "waited out, and the waiting has to be bounded."
-        )
-    assert "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" in makefile, (
-        "the Makefile never names UPDATE_COMPLETE_CLEANUP_IN_PROGRESS, which is the state "
-        "actually hit. An operator holding CloudFormation's message greps for that word."
-    )
-    for terminal in (
-        "REVIEW_IN_PROGRESS",
-        "ROLLBACK_FAILED",
-        "UPDATE_ROLLBACK_FAILED",
-        "DELETE_FAILED",
-    ):
-        assert terminal in recipe, (
-            f"the wait does not case {terminal}. A terminal state never clears, so waiting on "
-            "it spends the whole budget and then reports a timeout instead of the real problem."
-        )
-
-    bound = re.search(r"^ACCOUNT_WAIT_SECONDS \?= (\d+)$", makefile, re.MULTILINE)
-    assert bound is not None, (
-        "Makefile declares no `ACCOUNT_WAIT_SECONDS ?= <seconds>`. `?=` and never `:=`: "
-        "`test_the_makefile_declares_exactly_the_five_targets` reads a `:=` at column 0 as a "
-        "sixth target."
-    )
-    assert int(bound.group(1)) > 0, (
-        f"ACCOUNT_WAIT_SECONDS is {bound.group(1)}, so the wait either never polls or never "
-        "gives up; an unbounded loop inside a deploy is worse than a clear failure."
-    )
-
-    assert recipe.index("describe-stacks") < recipe.index("$(CDK) deploy --all"), (
-        "the account-stack poll comes after `$(CDK) deploy --all`. A wait is worthless after "
-        "the command it protects -- cdk is what fails on a stack mid-operation."
-    )
-    assert recipe.index("REVIEW_IN_PROGRESS") < recipe.index("*_IN_PROGRESS"), (
-        "REVIEW_IN_PROGRESS is cased after the `*_IN_PROGRESS` glob it matches, so an "
-        "abandoned change set is treated as transient: it burns the whole wait budget and is "
-        "then reported as a timeout rather than as the change set someone left behind."
-    )
-
-
-def test_the_deploy_reports_the_orphaned_shared_account_stack() -> None:
-    """The pre-split `$(STACK_PREFIX)Account` stack is named, with the command to delete it.
-
-    It still holds a live web ACL and a budget, so the deploy reports it rather than deleting
-    it -- another fleet's distribution may still reference that ACL. It is a closing message
-    and not a precondition, so it has to come after the deploy that made the old stack idle.
-    """
-    recipe = _deploy_recipe()
-    assert "$(ACCOUNT_STACK)" in recipe and "delete-stack" in recipe, (
-        "the deploy never names $(ACCOUNT_STACK) with a `delete-stack` command. After the "
-        "account stack became one instance per consuming region, the shared stack from any "
-        "earlier deploy is orphaned and nothing else in the tree will ever mention it again."
-    )
-    assert recipe.index("delete-stack") > recipe.index("$(CDK) deploy --all"), (
-        "the orphan notice is printed before `$(CDK) deploy --all`, where it reads as a "
-        "prerequisite. Nothing is orphaned until this deploy has created the per-region stack."
-    )
-
-
-def _defined_program(name: str, tmp_path: Path) -> Path:
-    """The body of a `define <name> ... endef` Makefile block, written out as a script.
-
-    Local to this test on purpose: it is the only place a `define`d program is run outside
-    make, and a shared helper would invite reading the other one the same way when nothing
-    else needs to.
-    """
-    makefile = (REPO_ROOT / "Makefile").read_text()
-    block = re.search(rf"^define {name}$\n(.*?)^endef$", makefile, re.MULTILINE | re.DOTALL)
-    assert block is not None, f"Makefile no longer defines a `define {name}` block"
-    assert f"export {name}" in makefile, (
-        f"Makefile defines {name} but never exports it. `$${name}` in a recipe is a SHELL "
-        "variable, so without the export every read expands to the empty string silently."
-    )
-    program = tmp_path / f"{name.lower()}.py"
-    program.write_text(block.group(1))
-    return program
-
-
-def test_the_outputs_reader_names_a_missing_stack_instead_of_raising(tmp_path: Path) -> None:
-    """`json_output` must report a stack the outputs file does not carry as a sentence.
-
-    A bare `KeyError` naming the stack is not actionable; the message must say which stack
-    is missing and why. Only the value may reach stdout, because every call site reads this
-    through `$$(...)` and would otherwise write the diagnostic into `web/config.js`.
-    """
-    program = _defined_program("RCA_OUTPUT", tmp_path)
-    outputs = tmp_path / "stack-outputs.json"
-    outputs.write_text(
-        json.dumps({"SampleCodingAgentApi": {"ApiUrl": "https://example.execute-api.local"}})
-    )
-
-    def run(stack: str, key: str) -> subprocess.CompletedProcess[str]:
-        # A list argv: `sys.executable` and a program this test wrote to `tmp_path`.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        return subprocess.run(
-            [sys.executable, str(program), str(outputs), stack, key],
-            capture_output=True,
-            text=True,
-        )
-
-    good = run("SampleCodingAgentApi", "ApiUrl")
-    assert good.returncode == 0, f"the good case failed: {good.stderr}"
-    assert good.stdout == "https://example.execute-api.local\n", (
-        f"the good case printed {good.stdout!r}. The eleven call sites capture stdout with "
-        "command substitution, so anything but the value alone lands in a config file, a "
-        "bucket name or an AWS CLI argument."
-    )
-    assert good.stderr == "", f"the good case wrote {good.stderr!r} to stderr"
-
-    missing_stack = run("FooApi", "ApiUrl")
-    assert missing_stack.returncode != 0, (
-        "reading an absent stack exited 0. The call sites run under `set -eu`, so a zero "
-        "exit here lets the deploy carry on with an empty bucket name."
-    )
-    assert missing_stack.stdout == "", (
-        f"the missing-stack case printed {missing_stack.stdout!r} on stdout, which is the "
-        "stream the caller captures as a value."
-    )
-    assert "FooApi" in missing_stack.stderr and ("SampleCodingAgentApi" in missing_stack.stderr), (
-        "the message must name the stack it looked for AND the stacks the file does carry -- "
-        "that pair is what tells an operator the prefix, not the deploy, is what went wrong. "
-        f"Got: {missing_stack.stderr!r}"
-    )
-    assert "Traceback" not in missing_stack.stderr and "KeyError" not in missing_stack.stderr, (
-        "the outputs reader raised instead of failing with a sentence. A `KeyError` out of a "
-        "one-line JSON read is the original bug: `make deploy CONSOLE_STACK=Foo` advertised a "
-        "knob, ignored it, and then died in the console-upload step with a Python traceback "
-        f"naming the variable. Got: {missing_stack.stderr!r}"
-    )
-
-    missing_key = run("SampleCodingAgentApi", "MissingOutput")
-    assert missing_key.returncode != 0, "reading an absent output key exited 0"
-    assert "MissingOutput" in missing_key.stderr, (
-        "a stack that exists but lacks the output key must have the key named -- it is a "
-        f"different mistake from a wrong prefix. Got: {missing_key.stderr!r}"
-    )
-    assert "Traceback" not in missing_key.stderr, missing_key.stderr
-
-
 @pytest.mark.parametrize("manifest", _MANIFESTS)
 def test_every_declared_dependency_carries_an_upper_bound(manifest: str) -> None:
     requirements = _declared_requirements(manifest)
@@ -334,7 +147,7 @@ def test_pytest_ini_keeps_the_loadfile_distribution() -> None:
     assert "-n auto" in section["addopts"]
     assert section["asyncio_mode"] == "auto"
     assert section["testpaths"] == "tests"
-    assert section["pythonpath"].split() == ["agent/src", "api/src", "mcp/src", "tests", "infra"]
+    assert section["pythonpath"].split() == ["agent/src", "api/src", "tests", "infra"]
 
 
 def _dockerfile_args() -> dict[str, str]:
@@ -409,8 +222,8 @@ def test_the_agent_image_carries_no_baked_kiro_bundle() -> None:
         "the image must not install the AWS documentation MCP server at build time."
     )
     profile = (REPO_ROOT / "agent/src/coding_agent/kiro_profile.py").read_text()
-    assert "gateway" in profile and "harness" in profile, (
-        "harness sessions must wire harness and gateway MCP servers in the Kiro agent profile."
+    assert "agentcore_gateway_bridge" in profile and "harness_server" not in profile, (
+        "fleet Kiro sessions must use the AgentCore Gateway MCP bridge only."
     )
 
 

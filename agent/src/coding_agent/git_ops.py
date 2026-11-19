@@ -20,7 +20,6 @@ that exists only for the length of the call.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import logging
 import os
 import shutil
@@ -90,15 +89,10 @@ case "$1" in
 esac
 """
 
-# `.agent/` is the roles' own workspace and `.agent.repo/` is the clone's quarantined
-# one; neither is the work being reviewed.
-_SOURCE_PATHSPEC = (".", ":(exclude).agent", ":(exclude).agent.repo")
-
-
 # What a repository's own setup and test commands leave behind, as `.gitignore` patterns.
 # Written to the clone's `.git/info/exclude` -- local to the clone, never pushed, and never
-# an edit to the repository's own `.gitignore` -- because `commit` stages with `git add -A`
-# and a repository with no `.gitignore` would otherwise ship its bytecode as untracked files.
+# an edit to the repository's own `.gitignore` -- so a repository with no `.gitignore`
+# would otherwise treat build artefacts as untracked files the agent might commit.
 # Tracked files are untouched (an exclude only hides *untracked* paths), so a repository that
 # deliberately commits one of these keeps doing so.
 BUILD_ARTIFACT_PATTERNS = (
@@ -253,10 +247,13 @@ def _is_local(source: str) -> bool:
     return "://" not in source and not source.startswith("git@")
 
 
-def clone(source: str, dest: Path, *, token: str | None = None) -> None:
+def clone(source: str, dest: Path, *, token: str | None = None, branch: str | None = None) -> None:
     """Clone `source` into `dest`, authenticating only when the source is remote."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    args = ["clone", "--quiet", source, str(dest)]
+    args = ["clone", "--quiet"]
+    if branch:
+        args.extend(["--branch", branch])
+    args.extend([source, str(dest)])
     if _is_local(source):
         # Nothing to authenticate, but the source repository is on the same
         # foreign-owned mount and git reports a clone source as its *gitdir*, so it
@@ -267,29 +264,18 @@ def clone(source: str, dest: Path, *, token: str | None = None) -> None:
     _run_authenticated(args, cwd=dest.parent, token=token)
 
 
-def create_branch(repo: Path, branch: str) -> None:
-    """Check `branch` out, creating it only when it does not exist yet.
-
-    Idempotent on purpose: a resumed task re-runs `checkout` against a clone that
-    already carries the branch, and `git checkout -b` fails there. Failing on the
-    resume path would discard the hours of work the checkpoint exists to keep.
-    """
-    code, _, _ = _git(
-        ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo, check=False
-    )
-    if code == 0:
-        log.info("branch %s already exists in %s; checking it out", branch, repo)
-        _git(["checkout", branch], cwd=repo)
-        return
-    _git(["checkout", "-b", branch], cwd=repo)
-
-
-def checkout_branch(repo: Path, branch: str) -> None:
+def checkout_branch(repo: Path, branch: str, *, token: str | None = None) -> None:
     """Check out an existing branch from `origin` (never creates a new branch name)."""
-    _git(
-        ["fetch", "--quiet", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"],
-        cwd=repo,
-    )
+    fetch_args = [
+        "fetch",
+        "--quiet",
+        "origin",
+        f"refs/heads/{branch}:refs/remotes/origin/{branch}",
+    ]
+    if token:
+        _run_authenticated(fetch_args, cwd=repo, token=token)
+    else:
+        _git(fetch_args, cwd=repo)
     code, _, _ = _git(
         ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
         cwd=repo,
@@ -322,155 +308,6 @@ def current_branch(repo: Path) -> str:
     """The checked-out branch name (`HEAD` when detached)."""
     _, out, _ = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo)
     return out.strip()
-
-
-def _origin_head_ref(repo: Path) -> str:
-    """`refs/remotes/origin/HEAD`'s target, or `""` when the ref does not resolve.
-
-    The one place that runs this command, because two callers now ask two different
-    questions of the same answer -- which branch, and whether the ref exists at all.
-    """
-    code, out, _ = _git(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=repo, check=False)
-    return out.strip() if code == 0 else ""
-
-
-def has_origin_head(repo: Path) -> bool:
-    """Whether `refs/remotes/origin/HEAD` resolves in this clone.
-
-    Read by `nodes/review.py` before it dispatches `/security-review`. That command is a
-    prompt template whose body opens with a shell pre-command,
-    `!git log --no-decorate origin/HEAD...`, and where this ref does not resolve it
-    aborts **before any model call** and the CLI still returns `subtype: "success"`,
-    `is_error: false`, `num_turns: 0`, `total_cost_usd: 0` and an empty `result` in about
-    100 ms -- a silent no-op that reads as a clean pass. The ref is absent from a local
-    clone and from a `git init` scratch repo,
-    which is exactly `local_run.py`'s situation, so the caller has to ask first.
-    """
-    return bool(_origin_head_ref(repo))
-
-
-def default_branch(repo: Path) -> str:
-    """The clone's default branch, falling back to `"main"`.
-
-    `refs/remotes/origin/HEAD` is absent from a local clone and from a `git init`
-    scratch repo, and the answer is the base of a pull request, so the fallback is the
-    modern default rather than an error -- a task that cannot name a base branch would
-    otherwise die before it planned anything.
-    """
-    ref = _origin_head_ref(repo)
-    if ref:
-        return ref.rsplit("/", 1)[-1]
-    log.info("%s has no refs/remotes/origin/HEAD; assuming the base branch is main", repo)
-    return "main"
-
-
-def changed_paths(repo: Path) -> list[str]:
-    """Repo-relative paths with uncommitted changes, untracked files included.
-
-    One path per entry, so the callers' guards can filter on a prefix.
-    `--untracked-files=all` because the default collapses a new directory to `dir/`
-    and the no-op guard in `code` needs the file that was actually written.
-    """
-    _, out, _ = _git(["status", "--porcelain", "--untracked-files=all"], cwd=repo)
-    paths: list[str] = []
-    for line in out.splitlines():
-        if len(line) < 4:  # `XY path` -- anything shorter is not an entry
-            continue
-        entry = line[3:].strip()
-        # `R  old -> new`: the new path is the one in the tree now, and every caller is
-        # asking what this run produced rather than what it consumed.
-        if " -> " in entry:
-            entry = entry.split(" -> ", 1)[1].strip()
-        paths.append(entry.strip('"'))
-    return paths
-
-
-def has_changes(repo: Path) -> bool:
-    """Whether anything at all is uncommitted.
-
-    Note for callers: this is true the moment the plan node writes a spec, so it is
-    never the guard for "did the coder do any work" -- that is a filter over
-    `changed_paths`.
-    """
-    return bool(changed_paths(repo))
-
-
-def diff(repo: Path, *, base: str | None = None) -> str:
-    """The uncommitted change, or the change against `base` when one is named.
-
-    `git diff <base>` and not `<base>...HEAD`: until `submit` commits, the work is in
-    the worktree and a commit-to-commit range shows none of it.
-    """
-    args = ["diff", base] if base else ["diff", "HEAD"]
-    _, out, _ = _git(args, cwd=repo)
-    return out
-
-
-def source_diff_digest(repo: Path) -> str:
-    """sha256 of the uncommitted change outside `.agent/` -- *content*, not paths.
-
-    This is the whole mechanism of the one permitted hop back to `verify`: `review`
-    digests the tree either side of its own session, and a moved digest means the
-    exit code on the state describes a tree nobody ran. It has to be a content digest
-    because the likeliest shape of a helpful reviewer's edit is an in-place change to
-    a file the coder already touched, which changes no path at all.
-
-    Not side-effect free, stated rather than hidden: `git add -A -N` records
-    intent-to-add so untracked files appear in the diff, which mutates the index.
-    `submit` runs `git add -A` regardless; keeping this pure would mean shelling out
-    to a temporary index, which costs more than it buys.
-    """
-    _git(["add", "-A", "-N"], cwd=repo)
-    code, out, _ = _git(["diff", "HEAD", "--", *_SOURCE_PATHSPEC], cwd=repo, check=False)
-    if code != 0:
-        # `checkout` always clones a repository with history, so HEAD exists in every
-        # real run; this is the belt. A repository with no commit yet still gets a
-        # defined digest instead of a `GitError` raised in the middle of `review`.
-        _, out, _ = _git(["diff", "--cached", "--", *_SOURCE_PATHSPEC], cwd=repo, check=False)
-    return hashlib.sha256(out.encode("utf-8")).hexdigest()
-
-
-def commit(repo: Path, message: str) -> str:
-    """Stage everything and commit, returning the new sha.
-
-    No `-c user.email` here: the identity is in the exported config group, so a commit
-    made by a subagent's `Bash` carries the same one.
-    """
-    _git(["add", "-A"], cwd=repo)
-    _git(["commit", "-m", message], cwd=repo)
-    _, out, _ = _git(["rev-parse", "HEAD"], cwd=repo)
-    return out.strip()
-
-
-def push(
-    repo: Path,
-    branch: str,
-    *,
-    token: str,
-    repository: str,
-    host: str = "github.com",
-    username: str = "x-access-token",
-) -> None:
-    """Push the working commit to `refs/heads/<branch>` on `origin`.
-
-    `repository` (`owner/repo`) is what the remote URL is built from when the clone has
-    none usable -- a local clone source, on a developer machine. The PAT is **never**
-    part of that URL: `.git/config` outlives the push, `git remote -v` is one `Bash`
-    call away from every role, and a credential in a URL is also in the reflog
-    (invariant 4). Authentication goes through `GIT_ASKPASS` instead.
-    """
-    code, out, _ = _git(["remote", "get-url", "origin"], cwd=repo, check=False)
-    url = f"https://{host}/{repository}.git"
-    if code != 0:
-        _git(["remote", "add", "origin", url], cwd=repo)
-    elif _is_local(out.strip()):
-        _git(["remote", "set-url", "origin", url], cwd=repo)
-    _run_authenticated(
-        ["push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"],
-        cwd=repo,
-        token=token,
-        username=username,
-    )
 
 
 @contextlib.contextmanager

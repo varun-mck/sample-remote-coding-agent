@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Rules for changing this repository. Operator reference: `README.md`, `docs/operations.md`,
 `docs/security.md`.
@@ -18,8 +18,7 @@ make lint
 | `agent/` | AgentCore runtime image and Kiro harness |
 | `api/` | Task API Lambdas |
 | `infra/` | CDK: Data, Runtime, Gateway, Api, Account stacks |
-| `mcp/` | Claude Code MCP server |
-| `plugins/sample-rca/` | Plugin pin and remote skill |
+| `scripts/rca_cli.py` | Operator CLI (SigV4 to the task API) |
 
 ## Core invariants
 
@@ -27,14 +26,12 @@ make lint
 2. ARM64 everywhere.
 3. Git credentials never enter the environment or command line; use `credentials.fetch_token`
    and `git_ops._askpass`.
-4. `publish_branch` and Gateway create-PR tools are the only publishers; hooks force draft
-   when `run_verification` did not pass.
+4. Git clone uses AgentCore Identity via `git_ops._askpass`; provider REST (PR, Jira,
+   Confluence, …) uses AgentCore Gateway MCP only.
 5. Per-task `KIRO_HOME` for the harness `rca` agent only; the target repo's `.kiro/` is trusted as cloned.
-6. Gateway MCP (stdio) for Git/Atlassian tools; harness MCP (stdio) for verify and publish only.
+6. AgentCore Gateway MCP (stdio IAM bridge) for provider tools; verify via shell when configured.
 7. One runtime per fleet; one session per task.
-8. Every dependency has an upper bound at the next major version (invariant 29).
+8. Task outcome is free-form: `SUCCEEDED` or `FAILED` from the Kiro run, with the agent's final
+   message stored as `result` (no mandatory PR).
 9. AgentCore runtime uses `PUBLIC` network mode (no VPC in this fleet).
-
-## Changing `mcp/`
-
-Land as two commits: the change, then update `plugins/sample-rca/.mcp.json` pin.
+10. Every dependency has an upper bound at the next major version in project requirements files.

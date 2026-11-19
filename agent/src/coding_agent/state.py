@@ -9,14 +9,11 @@ TaskStatus = Literal[
     "DISPATCHED",
     "RUNNING",
     "SUCCEEDED",
-    "SUCCEEDED_UNVERIFIED",
     "FAILED",
     "CANCELLED",
 ]
 
-TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"SUCCEEDED", "SUCCEEDED_UNVERIFIED", "FAILED", "CANCELLED"}
-)
+TERMINAL_STATUSES: frozenset[str] = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
 
 
 class CommandResult(TypedDict, total=False):

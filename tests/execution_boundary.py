@@ -173,16 +173,6 @@ WIDER_RESOURCES: dict[tuple[str, str], str] = {
         "grants in a second statement. Region and account are wildcards because the name "
         "prefix is the fence (Tier 1 #9)."
     ),
-    ("MayUseOwnMemory", f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:memory/*"): (
-        "One ceiling spans every configuration's memory because the boundary is minted once "
-        "per deploy, before any memory exists, while the grant names one literal ARN per "
-        "role. The trailing `*` also absorbs the ten-character suffix AgentCore appends to "
-        "every memory id -- botocore's own `memoryId` pattern is "
-        "`[a-zA-Z][a-zA-Z0-9-_]{0,99}-[a-zA-Z0-9]{10}` -- so an ARN ending at the name "
-        "matches nothing at all. The per-configuration literal ARN in the inline policy is "
-        "what stops one repository reaching another's memory (invariant 31's division of "
-        "labour, the same one `MayTouchOwnRows` states for `dynamodb:LeadingKeys`)."
-    ),
 }
 
 # The same guard `tests/test_invoke_payload_contract.py` puts on its two declaration tables:

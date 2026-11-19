@@ -26,7 +26,6 @@ import app
 import execution_boundary
 import pytest
 from conftest import REPO_ROOT
-from rca_mcp import client as mcp_client
 from stacks import account_stack, agent_stack, api_stack, data_stack, gateway_stack
 
 HANDLERS = REPO_ROOT / "api/src/handlers"
@@ -367,23 +366,6 @@ def boundary_statements() -> list[Any]:
     )
 
 
-def test_the_boundary_model_arn_is_not_region_scoped(boundary_statements: list[Any]) -> None:
-    """Invariant 21: a `global.` inference profile fans the call out to whichever region
-    serves the request, so a region in the foundation-model ARN denies the call from
-    every other one -- and the denial names the *model*, which reads as a bad model id or
-    an unentitled account rather than as a policy written one field too narrow."""
-    invoke = _statement_with(boundary_statements, "bedrock:InvokeModel")
-    resources = _resources(invoke)
-    assert any(
-        resource.startswith("arn:aws:bedrock:*::foundation-model/") for resource in resources
-    ), f"the foundation-model ARN must carry no region, got {resources}"
-    for resource in resources:
-        assert "ap-southeast-1" not in resource, (
-            f"{resource} is region-scoped; a global. inference profile routes the call outside "
-            f"the calling region"
-        )
-
-
 def test_the_boundary_permits_the_image_pull(boundary_statements: list[Any]) -> None:
     """The ceiling over `provisioner._execution_role_policy`'s ECR grant, and the reason
     this function's own docstring says an action the inline policy allows and this list
@@ -584,7 +566,7 @@ def test_the_api_is_an_iam_function_url_because_api_gateway_is_denied_by_scp() -
     source = (INFRA / "stacks/api_stack.py").read_text()
     assert "aws_apigateway" not in source
     assert "auth_type=lambda_.FunctionUrlAuthType.AWS_IAM" in source
-    assert mcp_client.SERVICE == "lambda"
+    assert 'SERVICE = "lambda"' in (REPO_ROOT / "scripts/rca_cli.py").read_text()
 
 
 def test_exactly_the_self_chaining_consumers_opt_out_of_recursive_loop_detection() -> None:
@@ -611,11 +593,11 @@ def test_the_function_factory_applies_the_recursive_loop_setting() -> None:
     assert "RecursiveLoop.TERMINATE" in source
 
 
-def test_the_api_stack_name_and_output_key_are_the_ones_the_mcp_client_looks_up() -> None:
-    """The plugin's whole "nobody types the API URL" story is a `describe_stacks` against
-    that name for that output, so both halves are a contract between two directories."""
-    assert app.API_STACK_NAME == mcp_client.DEFAULT_STACK_NAME
-    assert api_stack.API_URL_OUTPUT_KEY == mcp_client.API_URL_OUTPUT_KEY
+def test_the_api_stack_name_and_output_key_match_app() -> None:
+    """Deploy and `scripts/rca_cli.py` read `ApiUrl` from the API stack output."""
+    names = app.stack_names()
+    assert names.api == app.API_STACK_NAME
+    assert api_stack.API_URL_OUTPUT_KEY == "ApiUrl"
     source = (INFRA / "stacks/api_stack.py").read_text()
     assert "CfnOutput(self, API_URL_OUTPUT_KEY" in source, (
         "the output's logical id IS the constant -- writing the literal instead lets the two "

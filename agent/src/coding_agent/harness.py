@@ -2,29 +2,33 @@
 
 from __future__ import annotations
 
-import json
+import contextlib
 import logging
 import shutil
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from . import commands, config, credentials, git_ops, providers, store
 from .kiro_runner import prepare_kiro_home, run_kiro
-from .state import TaskStatus
-from .state_file import load
+from .state import TaskState
 
 log = logging.getLogger(__name__)
 
 _FLEET_CONFIG_ID = "__fleet__"
+_BRIDGE_LOG_TAIL_LINES = 80
 
-_DELIVER_INSTRUCTIONS = """\
-Complete the task using the harness workflow:
-1. Implement the requested changes.
-2. Call run_verification.
-3. Call publish_branch with a clear commit message.
-4. Call gateway create_pull_request with title and body summarizing the change.
+_TASK_PREAMBLE = """\
+You are working in a checked-out Git repository for a remote coding task.
 
-Never merge or approve pull requests. Never run git push or git remote from shell.
+Use `shell` for local commands (including verification when a command is given).
+Use the AgentCore Gateway MCP tools (list tools if needed) for Git host APIs, Jira,
+Confluence, and other configured providers — tool names are usually `{provider}___{operation}`.
+
+Complete what the user asked. Push or publish only when the task requires it.
+End with a clear summary of what you did and any links (PR, page, ticket, etc.).
+Never merge or approve pull requests.
 """
 
 
@@ -43,25 +47,73 @@ def _task_prompt(
     payload: dict[str, Any], ref: providers.RepositoryRef, branch: str, base: str, verify: str
 ) -> str:
     body = str(payload.get("prompt") or "").strip()
+    prefix = providers.gateway_tool_prefix(ref.provider)
     return (
-        f"{_DELIVER_INSTRUCTIONS}\n\n"
+        f"{_TASK_PREAMBLE}\n\n"
         f"Repository: {ref.url}\n"
         f"Base branch: {base}\n"
         f"Task branch: {branch}\n"
-        f"Verification command: {verify or '(none)'}\n\n"
+        f"Verification command: {verify or '(none)'}\n"
+        f"Gateway tool prefix hint: {prefix}___\n\n"
         f"{body}"
     )
 
 
+@contextlib.contextmanager
+def _step(task_key: TaskState, name: str) -> Iterator[None]:
+    started = time.monotonic()
+    log.info("step start: %s", name)
+    store.set_status(task_key, "RUNNING", step=name)
+    try:
+        yield
+    except Exception:
+        log.exception("step failed: %s after %.1fs", name, time.monotonic() - started)
+        raise
+    else:
+        log.info("step done: %s (%.1fs)", name, time.monotonic() - started)
+
+
+def _git_head_sha(repo_dir: Path) -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return out.stdout.strip()[:12] if out.returncode == 0 else "?"
+    except OSError:
+        return "?"
+
+
+def _tail_bridge_log(path: Path) -> None:
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    tail = lines[-_BRIDGE_LOG_TAIL_LINES:]
+    if not tail:
+        return
+    log.info("gateway bridge log tail (%s lines):", len(tail))
+    for line in tail:
+        log.info("  bridge: %s", line[:500])
+
+
 async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = str(payload["taskId"])
+    fleet_key: TaskState = {"taskId": task_id, "configId": _FLEET_CONFIG_ID}
     ref = providers.provider_from_payload(payload)
     cfg = config.load_config()
     work_dir = cfg.work_root / task_id
     repo_dir = work_dir / "repo"
     kiro_home = work_dir / "kiro_home"
-    state_path = work_dir / ".agent" / "state.json"
-    context_path = work_dir / ".agent" / "context.json"
+    agent_dir = work_dir / ".agent"
+    stream_log = agent_dir / "kiro-stream.jsonl"
+    bridge_log = agent_dir / "gateway-bridge.log"
     branch = str(payload.get("branch") or payload.get("taskBranch") or "").strip()
     if not branch:
         raise ValueError(
@@ -69,104 +121,97 @@ async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         )
     base_branch = str(payload.get("defaultBranch") or payload.get("baseBranch") or "main")
 
+    log.info(
+        "task %s repository=%s branch=%s prompt_len=%s",
+        task_id,
+        ref.url,
+        branch,
+        len(str(payload.get("prompt") or "")),
+    )
+
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
+    agent_dir.mkdir(parents=True, exist_ok=True)
 
-    token = credentials.fetch_token(ref.provider)
-    git_ops.clone(providers.clone_url(ref), repo_dir, token=token or None)
-    git_ops.checkout_branch(repo_dir, branch)
-    git_ops.exclude_build_artifacts(repo_dir)
+    with _step(fleet_key, "resolve-repository"):
+        _ = ref
+
+    token = ""
+    with _step(fleet_key, "fetch-credential"):
+        token = credentials.fetch_token(ref.provider)
+
+    with _step(fleet_key, "clone"):
+        git_ops.clone(
+            providers.clone_url(ref),
+            repo_dir,
+            token=token or None,
+            branch=branch,
+        )
+
+    with _step(fleet_key, "checkout"):
+        git_ops.checkout_branch(repo_dir, branch, token=token or None)
+        git_ops.exclude_build_artifacts(repo_dir)
+        log.info("task %s HEAD %s", task_id, _git_head_sha(repo_dir))
 
     setup_command, verify_command = _detect_commands(repo_dir, payload)
     if setup_command:
-        commands.run_setup(setup_command, cwd=repo_dir)
-
-    context_path.write_text(
-        json.dumps(
-            {
-                "task_id": task_id,
-                "branch": branch,
-                "base_branch": base_branch,
-                "verify_command": verify_command,
-                "host": ref.provider.host,
-                "slug": ref.slug,
-                "owner": ref.owner,
-                "repo": ref.repo,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    state_path.write_text(
-        json.dumps({"branch": branch, "verified": False, "published": False}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+        with _step(fleet_key, "setup"):
+            setup_result = commands.run_setup(setup_command, cwd=repo_dir)
+            log.info(
+                "setup exit=%s command=%s",
+                setup_result.get("exitCode"),
+                setup_command[:200],
+            )
 
     prepare_kiro_home(kiro_home)
 
-    store.set_status(
-        {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-        "RUNNING",
-        extra={"step": "deliver"},
-    )
+    store.set_status(fleet_key, "RUNNING", step="kiro")
 
     user_prompt = _task_prompt(payload, ref, branch, base_branch, verify_command)
-    result = run_kiro(
-        prompt=user_prompt,
-        kiro_home=kiro_home,
-        state_path=state_path,
-        workspace=repo_dir,
-        context_path=context_path,
-        provider=ref.provider,
-        branch=branch,
-        base_branch=base_branch,
-    )
-
-    final_state = load(state_path)
-    pr_url = str(final_state.get("pr_url") or "")
-    verified = bool(final_state.get("verified"))
-
-    if result.credits is not None:
-        store.set_status(
-            {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-            "RUNNING",
-            extra={"kiroCredits": result.credits},
+    with _step(fleet_key, "kiro"):
+        result = run_kiro(
+            prompt=user_prompt,
+            kiro_home=kiro_home,
+            workspace=repo_dir,
+            stream_log=stream_log,
+            bridge_log=bridge_log,
         )
+
+    _tail_bridge_log(bridge_log)
+
+    extra: dict[str, Any] = {
+        "durationSeconds": round(result.duration_seconds, 2),
+    }
+    if result.credits is not None:
+        extra["kiroCredits"] = result.credits
 
     if not result.success:
-        store.set_status(
-            {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-            "FAILED",
-            extra={"error": result.error or "kiro run failed"},
-        )
-        return {"taskId": task_id, "status": "FAILED", "error": result.error}
-
-    if not pr_url:
-        store.set_status(
-            {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-            "FAILED",
-            extra={"error": "the agent loop finished without opening a pull request"},
+        store.record_result(
+            fleet_key,
+            status="FAILED",
+            result=result.final_text or None,
+            extra={**extra, "error": (result.error or "kiro run failed")[:2000]},
         )
         return {
             "taskId": task_id,
             "status": "FAILED",
-            "error": "the agent loop finished without opening a pull request",
+            "error": result.error,
+            "result": result.final_text,
         }
 
-    status: TaskStatus = "SUCCEEDED" if verified and pr_url else "SUCCEEDED_UNVERIFIED"
-    store.record_result(
-        {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-        status=status,
-        pr_url=pr_url,
-        verify_result=final_state.get("verification") or {},
-    )
+    with _step(fleet_key, "record-result"):
+        store.record_result(
+            fleet_key,
+            status="SUCCEEDED",
+            result=result.final_text or "(no final message from agent)",
+            extra=extra,
+        )
+
     return {
         "taskId": task_id,
-        "status": status,
-        "prUrl": pr_url,
-        "finalText": result.final_text,
+        "status": "SUCCEEDED",
+        "result": result.final_text,
         "kiroCredits": result.credits,
+        "durationSeconds": result.duration_seconds,
     }
