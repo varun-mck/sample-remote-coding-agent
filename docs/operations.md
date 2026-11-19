@@ -11,6 +11,20 @@ python scripts/rca_cli.py submit --repo ... --branch ... --prompt '...'
 
 Requires IAM permission to invoke the API function URL (`lambda:InvokeFunctionUrl`).
 
+## Submit from Kiro (power)
+
+`kiro-rca-power/` is a Kiro power: an MCP server with `submit_task`, `get_task`,
+`list_tasks` and `cancel_task`, plus a skill. It signs requests with SigV4 (service `lambda`)
+using your AWS credential chain in-process, so no CLI is involved.
+
+```bash
+kiro-cli powers install "$PWD/kiro-rca-power"
+```
+
+It reads `~/.rca/endpoint.json` (written by `make deploy`). Write `~/.rca/power.json` with
+`apiUrl`, `region` or `profile` to override. Requires `uv`. See
+[kiro-rca-power/README.md](../kiro-rca-power/README.md).
+
 ## Poll status
 
 ```bash

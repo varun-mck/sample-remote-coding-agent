@@ -1,0 +1,29 @@
+[project]
+name = "kiro-rca-power"
+version = "0.1.0"
+description = "Kiro power: stdio MCP server for the remote coding agent's IAM-signed task API"
+requires-python = ">=3.11"
+
+dependencies = [
+    "mcp>=1.2.0,<2",
+    "boto3>=1.43.95,<2",
+    "botocore>=1.43.95,<2",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+kiro-rca-power = "kiro_rca_power.server:main"
+
+# hatchling builds out of tree, so `uvx --from <power dir>` never writes an
+# egg-info or build/ directory into the installed power.
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kiro_rca_power"]
+
+# uv rebuilds a local-directory source only when a cache key changes. Without the
+# source glob, an edited module keeps running the stale build.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]

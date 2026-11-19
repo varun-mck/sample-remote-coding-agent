@@ -19,6 +19,7 @@ make lint
 | `api/` | Task API Lambdas |
 | `infra/` | CDK: Data, Runtime, Gateway, Api, Account stacks |
 | `scripts/rca_cli.py` | Operator CLI (SigV4 to the task API) |
+| `kiro-rca-power/` | Kiro power: MCP server (SigV4 to the task API) and dispatch skill |
 
 ## Core invariants
 

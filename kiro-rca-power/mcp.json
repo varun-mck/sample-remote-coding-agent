@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "rca-fleet": {
+      "type": "stdio",
+      "command": "./bin/rca-power",
+      "env": {
+        "RCA_POWER_DATA": "${PLUGIN_DATA}"
+      }
+    }
+  }
+}

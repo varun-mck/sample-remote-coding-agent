@@ -20,15 +20,16 @@ setup:
 	.venv/bin/python -m pip install --quiet --no-cache-dir --upgrade pip
 	.venv/bin/python -m pip install --quiet --no-cache-dir -r requirements-dev.txt
 	.venv/bin/python -m pip install --quiet --no-cache-dir -e ./agent
+	.venv/bin/python -m pip install --quiet --no-cache-dir -e ./kiro-rca-power
 	.venv/bin/python -m pip install --quiet --no-cache-dir -r api/requirements.txt -r infra/requirements.txt
 
 test:
 	$(PYTHON) -m pytest -q
 
 lint:
-	$(PYTHON) -m ruff check agent/src api/src infra tests scripts
-	$(PYTHON) -m ruff format --check agent/src api/src infra tests scripts
-	$(PYTHON) -m mypy --config-file mypy.ini agent/src api/src infra
+	$(PYTHON) -m ruff check agent/src api/src infra tests scripts kiro-rca-power/src
+	$(PYTHON) -m ruff format --check agent/src api/src infra tests scripts kiro-rca-power/src
+	$(PYTHON) -m mypy --config-file mypy.ini agent/src api/src infra kiro-rca-power/src
 
 preflight:
 	@test -x .venv/bin/python || { echo "run make setup first"; exit 1; }
@@ -49,11 +50,11 @@ deploy:
 	  -c account="$$account" -c region="$$region" \
 	  -c stackPrefix=$(STACK_PREFIX) -c budgetAlertEmail=$(EMAIL)
 	@set -eu; \
-	api=$$(PYTHON -c "import json,sys; o=json.load(open('$(OUTPUTS)')); print(o['$(API_STACK)']['ApiUrl'])"); \
+	api=$$($(PYTHON) -c "import json,sys; o=json.load(open('$(OUTPUTS)')); print(o['$(API_STACK)']['ApiUrl'])"); \
 	region=$${AWS_REGION:-$${AWS_DEFAULT_REGION:-$$(aws configure get region)}}; \
-	printf '%s\n' "{\"apiUrl\":\"$$api\",\"stackName\":\"$(API_STACK)\",\"region\":\"$$region\",\"writtenBy\":\"make deploy\"}" > "$(RCA_HOME)/endpoint.json"
-	@echo "api: $$api"
-	@echo "wrote $(RCA_HOME)/endpoint.json"
+	printf '%s\n' "{\"apiUrl\":\"$$api\",\"stackName\":\"$(API_STACK)\",\"region\":\"$$region\",\"writtenBy\":\"make deploy\"}" > "$(RCA_HOME)/endpoint.json"; \
+	echo "api: $$api"; \
+	echo "wrote $(RCA_HOME)/endpoint.json"
 
 budget-reset:
 	@set -eu; \

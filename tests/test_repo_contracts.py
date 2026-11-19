@@ -25,6 +25,7 @@ _MANIFESTS = [
     "api/requirements.txt",
     "infra/requirements.txt",
     "agent/pyproject.toml",
+    "kiro-rca-power/pyproject.toml",
 ]
 
 # `agent/Dockerfile` is deliberately NOT a sixth manifest: `_declared_requirements` parses
@@ -147,7 +148,13 @@ def test_pytest_ini_keeps_the_loadfile_distribution() -> None:
     assert "-n auto" in section["addopts"]
     assert section["asyncio_mode"] == "auto"
     assert section["testpaths"] == "tests"
-    assert section["pythonpath"].split() == ["agent/src", "api/src", "tests", "infra"]
+    assert section["pythonpath"].split() == [
+        "agent/src",
+        "api/src",
+        "tests",
+        "infra",
+        "kiro-rca-power/src",
+    ]
 
 
 def _dockerfile_args() -> dict[str, str]:
