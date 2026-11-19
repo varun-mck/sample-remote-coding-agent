@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,23 @@ log = logging.getLogger(__name__)
 SERVER_NAME = "agentcore-gateway"
 _SIGV4_SERVICE = "bedrock-agentcore"
 _BRIDGE_LOG_ENV = "RCA_BRIDGE_LOG"
+_TOOL_RESULT_TAIL = 800
+_TOKEN_RE = re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,})\b")
+
+
+def summarize_tool_result(result: CallToolResult) -> str:
+    """Tool text for logs. Bodies and argument values are never logged; only Gateway errors."""
+    parts: list[str] = []
+    for block in result.content:
+        if isinstance(block, TextContent) and block.text:
+            parts.append(block.text)
+    text = "\n".join(parts).strip()
+    if not text:
+        return "(empty tool result)"
+    text = _TOKEN_RE.sub("***", text)
+    if len(text) > _TOOL_RESULT_TAIL:
+        return f"{text[:_TOOL_RESULT_TAIL]}…"
+    return text
 
 
 def _configure_logging() -> None:
@@ -104,13 +122,24 @@ def build_proxy_server(session: ClientSession) -> Server:
         try:
             result: CallToolResult = await session.call_tool(name, args)
             is_error = bool(getattr(result, "isError", False))
-            log.info(
-                "call_tool name=%s arg_keys=%s isError=%s duration=%.2fs",
-                name,
-                arg_keys,
-                is_error,
-                time.monotonic() - started,
-            )
+            duration = time.monotonic() - started
+            if is_error:
+                log.warning(
+                    "call_tool name=%s arg_keys=%s isError=%s detail=%s duration=%.2fs",
+                    name,
+                    arg_keys,
+                    True,
+                    summarize_tool_result(result),
+                    duration,
+                )
+            else:
+                log.info(
+                    "call_tool name=%s arg_keys=%s isError=%s duration=%.2fs",
+                    name,
+                    arg_keys,
+                    False,
+                    duration,
+                )
             return [block for block in result.content if isinstance(block, TextContent)]
         except Exception:
             log.exception(

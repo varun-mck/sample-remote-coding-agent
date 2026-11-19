@@ -59,6 +59,15 @@ Per-task debug files (on the runtime volume, not in git):
 
 Set `LOG_LEVEL=DEBUG` on the runtime for more harness logging.
 
+## AgentCore Gateway (GitHub PR tools)
+
+The CDK stack deploys a minimal GitHub OpenAPI target and attaches the `rca_github` API-key
+provider to it as `Authorization: Bearer <PAT>`; the gateway role may read that key. The
+provider must exist before the gateway stack deploys. Git clone uses Identity; REST PR creation
+uses Gateway. If `github___create_pull_request` returns an internal error, check that the
+`github` target shows the credential provider in the console and read `detail=` lines in the
+per-task gateway bridge log tail in the runtime log stream.
+
 ## GitHub credential
 
 Workload identity: `rca_git_wl`. API key provider: `rca_github` (PAT in Secrets Manager

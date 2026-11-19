@@ -10,11 +10,18 @@ from aws_cdk import aws_iam as iam
 from constructs import Construct
 
 # Minimal OpenAPI placeholders -- real provider definitions replace these at configure time.
+# Minimal GitHub pull-request create schema for AgentCore Gateway. Path and body fields match
+# https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request and the arguments Kiro
+# sends (owner, repo, title, head, base, body, draft). Outbound auth is not in the spec; the
+# target attaches the `<app>_github` API-key provider as `Authorization: Bearer <PAT>`.
 _GITHUB_OPENAPI = """\
 openapi: 3.0.3
 info:
-  title: GitHub REST API (placeholder)
-  version: 0.0.1
+  title: GitHub REST API (pull request create)
+  version: 0.1.0
+  description: >-
+    Minimal OpenAPI for AgentCore Gateway MCP tools. Replace or extend from the official
+    GitHub OpenAPI export when adding more operations.
 servers:
   - url: https://api.github.com
 paths:
@@ -22,15 +29,20 @@ paths:
     post:
       operationId: create_pull_request
       summary: Create a pull request
+      description: >-
+        Creates a pull request. Requires a PAT with pull-request write access on the
+        repository. The gateway target must attach an outbound API-key credential provider.
       parameters:
         - name: owner
           in: path
           required: true
+          description: Repository owner login.
           schema:
             type: string
         - name: repo
           in: path
           required: true
+          description: Repository name without .git.
           schema:
             type: string
       requestBody:
@@ -39,9 +51,35 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - title
+                - head
+                - base
+              properties:
+                title:
+                  type: string
+                  description: Pull request title.
+                head:
+                  type: string
+                  description: Branch containing changes (same repo or user:branch).
+                base:
+                  type: string
+                  description: Branch to merge into.
+                body:
+                  type: string
+                  description: Pull request description.
+                draft:
+                  type: boolean
+                  description: Create as draft.
+                maintainer_can_modify:
+                  type: boolean
       responses:
         "201":
           description: Created
+        "403":
+          description: Forbidden
+        "422":
+          description: Validation failed
 """
 
 _BITBUCKET_OPENAPI = """\
@@ -193,6 +231,37 @@ class GatewayStack(cdk.Stack):
             )
         )
 
+        # The PAT behind `{app_name}_github` is the one git already uses; created outside CDK.
+        github_provider = f"{app_name}_github"
+        github_provider_arn = (
+            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:token-vault/default/"
+            f"apikeycredentialprovider/{github_provider}"
+        )
+        # Outbound API-key auth: the gateway exchanges its own workload token for the key, and
+        # Identity reads the key's secret with the gateway role's credentials.
+        gateway_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessToken",
+                    "bedrock-agentcore:GetResourceApiKey",
+                ],
+                resources=[
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:workload-identity-directory/default",
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:workload-identity-directory/default/workload-identity/*",
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:token-vault/default",
+                    github_provider_arn,
+                ],
+            )
+        )
+        gateway_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:bedrock-agentcore-identity!*"
+                ],
+            )
+        )
+
         gateway = agentcore.CfnGateway(
             self,
             "Gateway",
@@ -202,14 +271,28 @@ class GatewayStack(cdk.Stack):
             description=f"{app_name} MCP gateway for Git provider tools",
         )
 
-        for construct_id_suffix, target_name, schema in (
-            ("GithubTarget", "github", _GITHUB_OPENAPI),
-            ("BitbucketCloudTarget", "bitbucket-cloud", _BITBUCKET_OPENAPI),
-            ("JiraTarget", "jira", _JIRA_OPENAPI),
-            ("ConfluenceTarget", "confluence", _CONFLUENCE_OPENAPI),
-            ("JenkinsTarget", "jenkins", _JENKINS_OPENAPI),
+        github_auth = [
+            agentcore.CfnGatewayTarget.CredentialProviderConfigurationProperty(
+                credential_provider_type="API_KEY",
+                credential_provider=agentcore.CfnGatewayTarget.CredentialProviderProperty(
+                    api_key_credential_provider=agentcore.CfnGatewayTarget.ApiKeyCredentialProviderProperty(
+                        provider_arn=github_provider_arn,
+                        credential_location="HEADER",
+                        credential_parameter_name="Authorization",
+                        credential_prefix="Bearer",
+                    )
+                ),
+            )
+        ]
+
+        for construct_id_suffix, target_name, schema, auth in (
+            ("GithubTarget", "github", _GITHUB_OPENAPI, github_auth),
+            ("BitbucketCloudTarget", "bitbucket-cloud", _BITBUCKET_OPENAPI, None),
+            ("JiraTarget", "jira", _JIRA_OPENAPI, None),
+            ("ConfluenceTarget", "confluence", _CONFLUENCE_OPENAPI, None),
+            ("JenkinsTarget", "jenkins", _JENKINS_OPENAPI, None),
         ):
-            agentcore.CfnGatewayTarget(
+            target = agentcore.CfnGatewayTarget(
                 self,
                 construct_id_suffix,
                 gateway_identifier=gateway.attr_gateway_identifier,
@@ -222,7 +305,10 @@ class GatewayStack(cdk.Stack):
                         )
                     )
                 ),
+                credential_provider_configurations=auth,
             )
+            # The role's Identity grants must exist before the target validates its auth.
+            target.node.add_dependency(gateway_role)
 
         self.gateway_url: str = gateway.attr_gateway_url
         self.gateway_arn: str = gateway.attr_gateway_arn

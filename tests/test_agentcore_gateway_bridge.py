@@ -12,6 +12,25 @@ from coding_agent import store
 from coding_agent.kiro_profile import write_agent_profile
 from coding_agent.kiro_runner import parse_stream_json
 from coding_agent.mcp import agentcore_gateway_bridge as bridge
+from mcp.types import CallToolResult, TextContent
+
+
+def test_summarize_tool_result_redacts_tokens_and_truncates() -> None:
+    long = "x" * 900
+    result = CallToolResult(
+        content=[TextContent(type="text", text=f"failed ghp_abc1234567890 {long}")],
+        isError=True,
+    )
+    text = bridge.summarize_tool_result(result)
+    assert "ghp_" not in text
+    assert "***" in text
+    assert text.endswith("…")
+
+
+def test_summarize_tool_result_empty() -> None:
+    assert bridge.summarize_tool_result(CallToolResult(content=[], isError=True)) == (
+        "(empty tool result)"
+    )
 
 
 def test_gateway_mcp_url_appends_mcp_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
