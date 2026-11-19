@@ -69,6 +69,10 @@ Mention the remote coding agent in a Kiro conversation, for example:
 
 Kiro activates the power, calls `submit_task`, then polls `get_task`.
 
+Name a model or an effort level ("use claude-sonnet-4.6 at high effort") and `submit_task`
+passes `model` and `effort` through to the remote `kiro-cli`. Leave them out to use Kiro's
+defaults.
+
 ## Troubleshooting
 
 | Symptom | Cause |

@@ -212,6 +212,34 @@ def test_submit_task_posts_exactly_the_fleet_contract() -> None:
     assert "in flight" in text
 
 
+def test_submit_task_forwards_model_and_effort() -> None:
+    task = {"taskId": "tsk_1", "status": "QUEUED", "model": "claude-sonnet-4.6", "effort": "high"}
+    seen, handler = _recorder(httpx.Response(201, json=task))
+    text, is_error = power_server.call_tool(
+        _client(handler),
+        "submit_task",
+        {
+            "repositoryUrl": "https://github.com/o/r",
+            "branch": "feat/x",
+            "prompt": "p",
+            "model": "claude-sonnet-4.6",
+            "effort": "high",
+        },
+    )
+    assert not is_error, text
+    body = json.loads(seen[0].content)
+    assert body["model"] == "claude-sonnet-4.6"
+    assert body["effort"] == "high"
+    assert "model: claude-sonnet-4.6" in text
+    assert "effort: high" in text
+
+
+def test_the_effort_enum_matches_the_api() -> None:
+    submit = next(spec for spec in power_server.TOOLS if spec.name == "submit_task")
+    effort = submit.input_schema["properties"]["effort"]
+    assert effort["enum"] == ["low", "medium", "high", "xhigh", "max"]
+
+
 def test_submit_task_refuses_an_owner_repo_shorthand_locally() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("a malformed URL must not reach the network")

@@ -24,7 +24,7 @@ def task(item: Mapping[str, Any]) -> str:
         f"status: {status} ({'finished' if done else 'in flight; poll get_task again'})",
         f"repository: {_repository(item)}",
     ]
-    for key in ("createdAt", "updatedAt", "durationSeconds", "kiroCredits"):
+    for key in ("model", "effort", "createdAt", "updatedAt", "durationSeconds", "kiroCredits"):
         if item.get(key) not in (None, ""):
             lines.append(f"{key}: {item[key]}")
     steps = item.get("steps")

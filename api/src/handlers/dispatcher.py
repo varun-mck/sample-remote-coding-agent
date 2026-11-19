@@ -74,6 +74,8 @@ def _payload(task: Mapping[str, Any]) -> dict[str, Any]:
         "defaultBranch": task.get("defaultBranch", ""),
         "verifyCommand": task.get("verifyCommand", ""),
         "setupCommand": task.get("setupCommand", ""),
+        "model": task.get("model", ""),
+        "effort": task.get("effort", ""),
         "sessionId": str(task.get("sessionId") or observability.session_id(str(task["taskId"]))),
     }
 

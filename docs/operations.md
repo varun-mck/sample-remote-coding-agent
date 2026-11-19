@@ -5,9 +5,16 @@
 ```bash
 export AWS_REGION=us-east-1   # where the API is deployed
 make task REPO=https://github.com/owner/repo BRANCH=feat/x PROMPT='Your task'
+# optional model and reasoning effort for the remote kiro-cli run
+make task REPO=... BRANCH=... PROMPT='...' MODEL=claude-sonnet-4.6 EFFORT=high
 # or
-python scripts/rca_cli.py submit --repo ... --branch ... --prompt '...'
+python scripts/rca_cli.py submit --repo ... --branch ... --prompt '...' --model ... --effort high
 ```
+
+`model` is passed to `kiro-cli chat --model` (ids from `kiro-cli chat --list-models`); if you
+omit it, the fleet uses **claude-haiku-5.5**. Set runtime env `KIRO_DEFAULT_MODEL` to change
+that default. An id the fleet's Kiro account cannot use logs a warning and the run continues
+on Kiro's account default. `effort` is one of `low`, `medium`, `high`, `xhigh`, `max`. Optional.
 
 Requires IAM permission to invoke the API function URL (`lambda:InvokeFunctionUrl`).
 
@@ -38,6 +45,7 @@ Fields of interest:
 - `steps`: harness step names appended during the run
 - `result`: agent's final message on success
 - `error`: failure reason
+- `model`, `effort`: what was requested, when given
 - `durationSeconds`, `kiroCredits`
 
 ## Logs

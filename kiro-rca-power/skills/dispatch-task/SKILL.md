@@ -16,6 +16,8 @@ operator's own AWS credentials, so there is nothing to log in to from here.
   does not create it.
 - `prompt`: what the agent should do. Include "create a PR" or "push" only if the user
   asked for it.
+- `model` and `effort` are optional. Pass them only when the user names a model or an
+  effort level; otherwise the fleet runs **claude-haiku-5.5**.
 
 Ask the user for anything missing rather than guessing a repository or branch.
 

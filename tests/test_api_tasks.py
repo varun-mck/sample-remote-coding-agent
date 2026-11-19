@@ -50,6 +50,42 @@ def test_create_refuses_missing_fields(aws: Any) -> None:
     assert out["statusCode"] == 400
 
 
+_VALID = {"repositoryUrl": "https://github.com/o/r", "branch": "feature/x", "prompt": "fix it"}
+
+
+def test_create_stores_model_and_effort_when_given(aws: Any) -> None:
+    common, tasks = _load("tasks")
+    out = tasks.create(_create_event(**_VALID, model=" claude-sonnet-4.6 ", effort="HIGH"))
+    assert out["statusCode"] == 201
+    stored = common.tasks_table.get_item(Key={"taskId": _body(out)["taskId"]})["Item"]
+    assert stored["model"] == "claude-sonnet-4.6"
+    assert stored["effort"] == "high"
+
+
+def test_create_omits_model_and_effort_when_absent(aws: Any) -> None:
+    common, tasks = _load("tasks")
+    out = tasks.create(_create_event(**_VALID, model="", effort=" "))
+    stored = common.tasks_table.get_item(Key={"taskId": _body(out)["taskId"]})["Item"]
+    assert "model" not in stored
+    assert "effort" not in stored
+
+
+def test_create_refuses_an_unknown_effort(aws: Any) -> None:
+    _common, tasks = _load("tasks")
+    out = tasks.create(_create_event(**_VALID, effort="extreme"))
+    assert out["statusCode"] == 400
+    assert "effort must be one of" in _body(out)["message"]
+
+
+@pytest.mark.parametrize("model", ["--trust-all-tools", "claude sonnet", "x" * 129, "-m"])
+def test_create_refuses_a_malformed_model(aws: Any, model: str) -> None:
+    common, tasks = _load("tasks")
+    out = tasks.create(_create_event(**_VALID, model=model))
+    assert out["statusCode"] == 400
+    assert _body(out)["error"] == "InvalidBody"
+    assert not common.tasks_table.scan().get("Items")
+
+
 def test_get_returns_one_task(aws: Any) -> None:
     common, tasks = _load("tasks")
     common.tasks_table.put_item(

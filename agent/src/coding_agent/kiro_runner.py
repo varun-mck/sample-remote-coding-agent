@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.kiro_credentials import fetch_kiro_api_key
-from coding_agent.kiro_profile import AGENT_NAME, write_agent_profile
+from coding_agent.kiro_profile import AGENT_NAME, kiro_model_for_task, write_agent_profile
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +114,11 @@ def run_kiro(
     stream_log: Path,
     bridge_log: Path,
     git_env: dict[str, str] | None = None,
+    model: str = "",
+    effort: str = "",
 ) -> KiroRunResult:
-    write_agent_profile(kiro_home)
+    effective_model = kiro_model_for_task(model)
+    write_agent_profile(kiro_home, model=effective_model)
     api_key = fetch_kiro_api_key()
     env = os.environ.copy()
     if git_env:
@@ -137,11 +140,17 @@ def run_kiro(
         trust,
         "--agent",
         AGENT_NAME,
-        prompt,
     ]
+    # The `=` form keeps a value from ever being parsed as a flag of its own.
+    cmd.append(f"--model={effective_model}")
+    if effort:
+        cmd.append(f"--effort={effort}")
+    cmd.append(prompt)
     log.info(
-        "kiro-cli starting agent=%s prompt_bytes=%s cwd=%s",
+        "kiro-cli starting agent=%s model=%s effort=%s prompt_bytes=%s cwd=%s",
         AGENT_NAME,
+        effective_model,
+        effort or "(default)",
         len(prompt.encode("utf-8")),
         workspace,
     )

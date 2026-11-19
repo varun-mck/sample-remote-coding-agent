@@ -69,8 +69,9 @@ budget-reset:
 
 task:
 	@test -n "$(REPO)" -a -n "$(BRANCH)" -a -n "$(PROMPT)" || \
-	  { echo "usage: make task REPO=https://github.com/o/r BRANCH=feat/x PROMPT='...'"; exit 1; }
-	@$(PYTHON) scripts/rca_cli.py submit --repo "$(REPO)" --branch "$(BRANCH)" --prompt "$(PROMPT)"
+	  { echo "usage: make task REPO=https://github.com/o/r BRANCH=feat/x PROMPT='...' [MODEL=id] [EFFORT=low|medium|high|xhigh|max]"; exit 1; }
+	@$(PYTHON) scripts/rca_cli.py submit --repo "$(REPO)" --branch "$(BRANCH)" --prompt "$(PROMPT)" \
+	  $(if $(MODEL),--model "$(MODEL)") $(if $(EFFORT),--effort "$(EFFORT)")
 
 task-get:
 	@test -n "$(ID)" || { echo "usage: make task-get ID=tsk_..."; exit 1; }

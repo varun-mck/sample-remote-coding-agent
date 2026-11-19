@@ -38,11 +38,13 @@ async def test_harness_succeeds_without_pr(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(harness.git_ops, "checkout_branch", _noop)
     monkeypatch.setattr(harness.git_ops, "exclude_build_artifacts", _noop)
     monkeypatch.setattr(harness, "prepare_kiro_home", _noop)
-    monkeypatch.setattr(
-        harness,
-        "run_kiro",
-        lambda **_k: KiroRunResult(success=True, final_text="Task complete."),
-    )
+    kiro_kwargs: dict[str, object] = {}
+
+    def _run_kiro(**kwargs: object) -> KiroRunResult:
+        kiro_kwargs.update(kwargs)
+        return KiroRunResult(success=True, final_text="Task complete.")
+
+    monkeypatch.setattr(harness, "run_kiro", _run_kiro)
     recorded: list[tuple[str, str | None]] = []
 
     def _record(state, status, *, result=None, extra=None):
@@ -57,7 +59,11 @@ async def test_harness_succeeds_without_pr(monkeypatch: pytest.MonkeyPatch, tmp_
             "repositoryUrl": "https://github.com/o/r",
             "branch": "feat/x",
             "prompt": "do thing",
+            "model": "claude-sonnet-4.6",
+            "effort": "high",
         }
     )
     assert out["status"] == "SUCCEEDED"
     assert recorded and recorded[-1][0] == "SUCCEEDED"
+    assert kiro_kwargs["model"] == "claude-sonnet-4.6"
+    assert kiro_kwargs["effort"] == "high"

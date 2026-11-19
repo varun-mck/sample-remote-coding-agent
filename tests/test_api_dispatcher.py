@@ -15,9 +15,10 @@ RUNTIME_ARN = "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/fle
 SEEDED_AT = "2026-01-01T00:00:00.000Z"
 
 
-def _seed_task(common: Any, *, status: str = "QUEUED") -> None:
+def _seed_task(common: Any, *, status: str = "QUEUED", **extra: Any) -> None:
     common.tasks_table.put_item(
         Item={
+            **extra,
             "taskId": TASK_ID,
             "configId": "__fleet__",
             "prompt": "add a healthcheck",
@@ -54,6 +55,17 @@ def test_dispatch_claims_and_invokes(aws: Any, monkeypatch: pytest.MonkeyPatch) 
     assert payload["taskId"] == TASK_ID
     for field in invoke_payload.REQUIRED:
         assert field in payload
+
+
+def test_dispatch_forwards_model_and_effort(aws: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    common, dispatcher = _load("dispatcher")
+    fake = FakeAgentCore("bedrock-agentcore")
+    install(monkeypatch, common, data=fake)
+    _seed_task(common, model="claude-sonnet-4.6", effort="high")
+    dispatcher.lambda_handler({"Records": [_record()]}, None)
+    payload = json.loads(fake.calls_to("InvokeAgentRuntime")[0]["payload"].decode())
+    assert payload["model"] == "claude-sonnet-4.6"
+    assert payload["effort"] == "high"
 
 
 def test_dispatch_drops_unknown_task(aws: Any, monkeypatch: pytest.MonkeyPatch) -> None:

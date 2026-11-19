@@ -9,6 +9,8 @@ OPTIONAL: tuple[str, ...] = (
     "defaultBranch",
     "verifyCommand",
     "setupCommand",
+    "model",
+    "effort",
     "sessionId",
 )
 FIELDS: tuple[str, ...] = REQUIRED + OPTIONAL
@@ -23,6 +25,8 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "defaultBranch": "main",
         "verifyCommand": "make test",
         "setupCommand": "make setup",
+        "model": "claude-sonnet-4.6",
+        "effort": "high",
         "sessionId": "tsk_1700000000000_abcdef-822b04fc976432ceb11bc5cbfab01400",
     }
     return {**complete, **overrides}

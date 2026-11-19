@@ -18,6 +18,7 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 _SERVICE = "lambda"
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _CACHE = Path.home() / ".rca" / "endpoint.json"
 
 
@@ -84,6 +85,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
             **({"baseBranch": args.base_branch} if args.base_branch else {}),
             **({"verifyCommand": args.verify} if args.verify else {}),
             **({"setupCommand": args.setup} if args.setup else {}),
+            **({"model": args.model} if args.model else {}),
+            **({"effort": args.effort} if args.effort else {}),
         },
     )
     print(json.dumps(item, indent=2))
@@ -122,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
     submit.add_argument("--base-branch", default="")
     submit.add_argument("--verify", default="")
     submit.add_argument("--setup", default="")
+    submit.add_argument(
+        "--model", default="", help="Kiro model id (see `kiro-cli chat --list-models`)"
+    )
+    submit.add_argument("--effort", default="", choices=["", *_EFFORT_LEVELS])
     submit.set_defaults(func=cmd_submit)
 
     get = sub.add_parser("get", help="GET /tasks/{id}")

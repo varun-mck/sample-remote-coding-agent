@@ -400,6 +400,7 @@ class AgentStack(cdk.Stack):
             "WORK_ROOT": "/mnt/workspace/work",
             "TASKS_TABLE": tasks_table_name,
             "KIRO_API_KEY_SECRET": kiro_secret_name,
+            "KIRO_DEFAULT_MODEL": "claude-haiku-5.5",
         }
         if gateway_url:
             runtime_env["BEDROCK_AGENTCORE_GATEWAY_URL"] = gateway_url

@@ -35,6 +35,8 @@ def create(event: Mapping[str, Any]) -> tuple[int, Any]:
         base_branch=str(body.get("baseBranch") or body.get("defaultBranch") or "").strip(),
         verify_command=str(body.get("verifyCommand") or "").strip(),
         setup_command=str(body.get("setupCommand") or "").strip(),
+        model=str(body.get("model") or "").strip(),
+        effort=str(body.get("effort") or "").strip().lower(),
         team=_common.caller_team(event),
     )
     return 201, item

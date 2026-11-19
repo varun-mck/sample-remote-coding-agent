@@ -31,6 +31,11 @@ TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
 
 _REPO_URL = re.compile(r"^https?://[^/]+/.+/.+|^git@[^:]+:.+/.+")
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# Model ids depend on the Kiro account and release, so only the shape is checked. A leading
+# letter or digit keeps a value from ever reading as a `kiro-cli` flag.
+_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
 
 @dataclass(frozen=True)
 class ScreenedPrompt:
@@ -76,6 +81,18 @@ def _allowed_repository(url: str) -> None:
     raise ApiError(409, "RepositoryNotAllowed", "this repository is not on the allowlist")
 
 
+def _valid_model_and_effort(model: str, effort: str) -> None:
+    if model and not _MODEL_ID.match(model):
+        raise ApiError(
+            400,
+            "InvalidBody",
+            "model must be a Kiro model id such as claude-sonnet-4.6 "
+            "(letters, digits, '.', '_', ':', '/', '-'; at most 128 characters)",
+        )
+    if effort and effort not in EFFORT_LEVELS:
+        raise ApiError(400, "InvalidBody", f"effort must be one of {', '.join(EFFORT_LEVELS)}")
+
+
 def queue_run(
     *,
     repository_url: str,
@@ -84,9 +101,12 @@ def queue_run(
     base_branch: str = "",
     verify_command: str = "",
     setup_command: str = "",
+    model: str = "",
+    effort: str = "",
     team: str = "",
 ) -> dict[str, Any]:
     _allowed_repository(repository_url)
+    _valid_model_and_effort(model, effort)
     screened = screen_prompt(prompt)
     task_id = f"tsk_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
     runtime_arn = os.environ.get("AGENT_RUNTIME_ARN", "").strip()
@@ -111,6 +131,10 @@ def queue_run(
         item["verifyCommand"] = verify_command
     if setup_command:
         item["setupCommand"] = setup_command
+    if model:
+        item["model"] = model
+    if effort:
+        item["effort"] = effort
     if team:
         item["team"] = team
 

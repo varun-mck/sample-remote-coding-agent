@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import commands, config, credentials, git_ops, providers, store
+from .kiro_profile import kiro_model_for_task
 from .kiro_runner import prepare_kiro_home, run_kiro
 from .state import TaskState
 
@@ -120,12 +121,16 @@ async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             "the invocation payload is missing branch (existing remote branch to check out)"
         )
     base_branch = str(payload.get("defaultBranch") or payload.get("baseBranch") or "main")
+    model = str(payload.get("model") or "").strip()
+    effort = str(payload.get("effort") or "").strip()
 
     log.info(
-        "task %s repository=%s branch=%s prompt_len=%s",
+        "task %s repository=%s branch=%s model=%s effort=%s prompt_len=%s",
         task_id,
         ref.url,
         branch,
+        kiro_model_for_task(model),
+        effort or "(default)",
         len(str(payload.get("prompt") or "")),
     )
 
@@ -182,6 +187,8 @@ async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                 askpass_dir=agent_dir / "git-askpass",
                 username=ref.provider.git_username,
             ),
+            model=model,
+            effort=effort,
         )
 
     _tail_bridge_log(bridge_log)

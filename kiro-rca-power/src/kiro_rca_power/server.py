@@ -27,6 +27,8 @@ LOG = logging.getLogger("kiro_rca_power.server")
 
 SERVER_NAME = "rca-fleet"
 _DATA_ENV = "RCA_POWER_DATA"
+# Mirrors `runs.EFFORT_LEVELS` in the task API.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 _OUTCOME_NOTE = (
     "SUCCEEDED means the agent's run finished, not that a pull request was opened or a "
@@ -74,7 +76,7 @@ def submit_task(client: ApiClient, arguments: Mapping[str, Any]) -> str:
         "branch": _required(arguments, "branch"),
         "prompt": _required(arguments, "prompt"),
     }
-    for optional in ("baseBranch", "verifyCommand", "setupCommand"):
+    for optional in ("baseBranch", "verifyCommand", "setupCommand", "model", "effort"):
         value = _optional(arguments, optional)
         if value:
             body[optional] = value
@@ -137,6 +139,19 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "setupCommand": {
                     "type": "string",
                     "description": "Command that prepares the checkout, such as `make setup`.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "Kiro model id for the remote run, such as claude-sonnet-4.6 (ids come "
+                        "from `kiro-cli chat --list-models`). Only when the user asks for one; "
+                        "an id the fleet's Kiro account cannot use falls back to its default."
+                    ),
+                },
+                "effort": {
+                    "type": "string",
+                    "enum": list(EFFORT_LEVELS),
+                    "description": "Reasoning effort for the remote run. Only when asked for.",
                 },
             },
             "required": ["repositoryUrl", "branch", "prompt"],
