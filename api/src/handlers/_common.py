@@ -59,6 +59,20 @@ GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "")
 
 
+def caller_team(event: Mapping[str, Any]) -> str:
+    """Identity Center team tag from SigV4 caller context (function URL or API Gateway)."""
+    ctx = event.get("requestContext") or {}
+    auth = ctx.get("authorizer") or {}
+    for key in ("iam", "lambda"):
+        block = auth.get(key) or {}
+        tags = block.get("userPrincipalTags") or block.get("principalTags") or {}
+        if isinstance(tags, dict):
+            team = tags.get("team") or tags.get("Team")
+            if isinstance(team, str) and team.strip():
+                return team.strip()
+    return ""
+
+
 @functools.lru_cache(maxsize=1)
 def agentcore_control() -> Any:
     """The AgentCore *control* plane: Create/Get/Update/DeleteAgentRuntime.

@@ -1,5 +1,5 @@
 # ruff: noqa: T201 -- this is a CLI; its printed output is the product, not a debug aid.
-"""Run the AIPDLC harness locally against a repository URL."""
+"""Run the Kiro harness locally against a repository URL."""
 
 from __future__ import annotations
 
@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="https://host/owner/repo or git@host:owner/repo.git",
     )
     parser.add_argument("--prompt", required=True, help="what the agent should do")
+    parser.add_argument(
+        "--branch",
+        required=True,
+        help="existing remote branch to check out (must already exist on origin)",
+    )
     parser.add_argument("--task-id", default=None, help="default: synthetic tsk_<millis>_<hex>")
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--verify-command", default="")
@@ -40,6 +45,7 @@ def _synthetic_payload(args: argparse.Namespace) -> dict[str, Any]:
         "taskId": task_id,
         "prompt": args.prompt,
         "repositoryUrl": args.repository_url,
+        "branch": args.branch,
         "defaultBranch": args.base_branch,
     }
     if args.verify_command.strip():

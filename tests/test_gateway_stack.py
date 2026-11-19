@@ -1,4 +1,4 @@
-"""`GatewayStack` synthesizes a gateway and two OpenAPI targets."""
+"""`GatewayStack` synthesizes a gateway and Git/Atlassian OpenAPI targets."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def template(tmp_path: Path) -> Template:
     return Template.from_stack(stack)
 
 
-def test_the_gateway_and_two_targets_are_present(template: Template) -> None:
+def test_the_gateway_and_targets_are_present(template: Template) -> None:
     template.resource_count_is("AWS::BedrockAgentCore::Gateway", 1)
-    template.resource_count_is("AWS::BedrockAgentCore::GatewayTarget", 2)
+    template.resource_count_is("AWS::BedrockAgentCore::GatewayTarget", 5)
 
 
 def test_the_gateway_url_is_exported(template: Template) -> None:

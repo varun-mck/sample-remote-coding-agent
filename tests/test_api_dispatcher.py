@@ -23,6 +23,7 @@ def _seed_task(common: Any, *, status: str = "QUEUED") -> None:
             "prompt": "add a healthcheck",
             "status": status,
             "repositoryUrl": "https://github.com/owner/repo",
+            "branch": "feature/work",
             "agentRuntimeArn": RUNTIME_ARN,
             "sessionId": f"{TASK_ID}-seeded",
             "createdAt": SEEDED_AT,

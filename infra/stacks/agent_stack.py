@@ -785,20 +785,7 @@ def execution_role_boundary_statements(
 
 
 class AgentStack(cdk.Stack):
-    """The agent runtime's prerequisites: the ARM64 image, the VPC, and the boundary."""
-
-    @property
-    def availability_zones(self) -> list[str]:
-        """The zones `ec2.Vpc` checks `availability_zones=` against, overridden when named.
-
-        Without this, CDK checks the named zones against its own `availability-zones`
-        context lookup, and on a first synth that lookup answers placeholders
-        (`dummy1a`...) -- so a correct zone list fails as "not in this stack" before the
-        CLI ever gets to resolve the lookup. The zones were already resolved against this
-        account by `app.py`, so they are the stack's zones.
-        """
-        zones = getattr(self, "_agent_zones", None)
-        return list(zones) if zones else list(super().availability_zones)
+    """The agent runtime's prerequisites: the ARM64 image and the permissions boundary."""
 
     def __init__(
         self,
@@ -806,27 +793,12 @@ class AgentStack(cdk.Stack):
         construct_id: str,
         *,
         app_name: str,
-        # Defaulted so nothing that constructs this stack without an address breaks; empty
-        # means the DNS alarm is created with no action and `add_agent_network` annotates
-        # the synth to say so.
-        alert_email: str = "",
-        # `select_agent_zones`' answer, resolved by `app.py` against this account. Empty
-        # keeps the old `max_azs` placement, which only an environment-agnostic synth wants.
-        availability_zones: Sequence[str] = (),
-        endpoint_az_count: int = 1,
-        plan_model_id: str = "",
-        code_model_id: str = "",
-        haiku_model_id: str = "",
-        fallback_model_id: str = "",
-        goal_enabled: bool = True,  # noqa: ARG002
         git_author_name: str = "",
         git_author_email: str = "",
         gateway_url: str = "",
         tasks_table_name: str = "",
         **kwargs: Any,
     ) -> None:
-        # Set before `super().__init__`, because the property below is read during it.
-        self._agent_zones = list(availability_zones)
         super().__init__(scope, construct_id, **kwargs)
 
         # -- the image ------------------------------------------------------------
@@ -862,24 +834,7 @@ class AgentStack(cdk.Stack):
             platform=ecr_assets.Platform.LINUX_ARM64,
         )
 
-        # -- the VPC and the DNS Firewall (Tier 2 #16) ----------------------------
-        #
-        # Built on `self`, so every logical id is what it would be if the body of
-        # `add_agent_network` were still written out here.
-        network = add_agent_network(
-            self,
-            app_name=app_name,
-            alert_email=alert_email,
-            availability_zones=self._agent_zones,
-            endpoint_az_count=endpoint_az_count,
-        )
-        self.vpc = network.vpc
-        self.security_group = network.security_group
-
-        # Nothing reads this -- `make deploy` reads outputs from the API stack only
-        # (`SampleCodingAgentApi` by default; `-c stackPrefix=` renames it). It is
-        # here so a demo can point at the log the deny list writes into.
-        cdk.CfnOutput(self, "DnsQueryLogGroup", value=network.dns_query_log_group.log_group_name)
+        # PUBLIC network mode: no VPC, NAT, or interface endpoints in this fleet.
 
         # -- the permissions boundary --------------------------------------------
         #
@@ -954,29 +909,16 @@ class AgentStack(cdk.Stack):
             )
         )
 
-        # Every private subnet, one per zone: AgentCore expects at least two subnets in
-        # supported zones, while the endpoints above may sit in only one of them.
-        runtime_subnets = network.vpc.select_subnets(
-            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
-        ).subnet_ids
+        kiro_secret_name = f"{app_name}/kiro-api-key"
         runtime_env = {
-            "ANTHROPIC_MODEL": code_model_id,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": plan_model_id,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": code_model_id,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku_model_id,
-            "ANTHROPIC_FALLBACK_MODEL": fallback_model_id,
             "AGENT_GIT_AUTHOR_NAME": git_author_name,
             "AGENT_GIT_AUTHOR_EMAIL": git_author_email,
-            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-            "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
-            "AIPDLC_BUNDLE_PATH": "/app/aipdlc",
             "WORK_ROOT": "/mnt/workspace/work",
             "TASKS_TABLE": tasks_table_name,
-            "AWS_ENDPOINT_URL_DYNAMODB": network.dynamodb_endpoint_url,
+            "KIRO_API_KEY_SECRET": kiro_secret_name,
         }
         if gateway_url:
             runtime_env["BEDROCK_AGENTCORE_GATEWAY_URL"] = gateway_url
-            runtime_env["GATEWAY_MCP_COMMAND"] = "echo gateway"
 
         self.runtime = agentcore.CfnRuntime(
             self,
@@ -989,11 +931,7 @@ class AgentStack(cdk.Stack):
                 )
             ),
             network_configuration=agentcore.CfnRuntime.NetworkConfigurationProperty(
-                network_mode="VPC",
-                network_mode_config=agentcore.CfnRuntime.VpcConfigProperty(
-                    subnets=runtime_subnets,
-                    security_groups=[network.security_group.security_group_id],
-                ),
+                network_mode="PUBLIC",
             ),
             platform_version="V2",
             protocol_configuration="HTTP",
@@ -1002,11 +940,14 @@ class AgentStack(cdk.Stack):
             ),
             environment_variables=runtime_env,
         )
-        # AgentCore pulls the image during `CreateAgentRuntime`, but the runtime only
-        # references subnet, security group and role *ids* -- none of which waits for the
-        # ECR/S3 endpoints, the NAT route or the role's `DefaultPolicy`. Without these the
-        # first deploy races them and fails "Couldn't reach the container registry".
-        self.runtime.node.add_dependency(network.vpc)
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:{kiro_secret_name}*"
+                ],
+            )
+        )
         self.runtime.node.add_dependency(self.execution_role)
         self.agent_runtime_arn: str = self.runtime.attr_agent_runtime_arn
 

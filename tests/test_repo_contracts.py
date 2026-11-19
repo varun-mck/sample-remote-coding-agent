@@ -379,37 +379,25 @@ def test_every_stage_of_the_agent_image_is_arm64() -> None:
         )
 
 
-def test_the_agent_image_pins_the_claude_cli_and_smoke_checks_it() -> None:
+def test_the_agent_image_pins_the_kiro_cli_and_smoke_checks_it() -> None:
     text = _dockerfile()
-    references = re.findall(r"@anthropic-ai/claude-code@(\S+?)[\"'\s]", text)
-    assert len(references) == 1, (
-        "invariant 34: the Claude Code CLI must be installed exactly once, at an exact "
-        f"version. Found {references}, and a second reference is a second version that "
-        "moves independently of the first."
+    assert "KIRO_CLI_VERSION=" in text, (
+        "invariant 34: Kiro CLI must be pinned with ARG KIRO_CLI_VERSION in the Dockerfile."
     )
-    assert _EXACT_VERSION.match(references[0]), (
-        f"invariant 34: the CLI is installed at {references[0]!r}, which is not an exact "
-        "version. This CLI executes model-chosen commands inside a container running an "
-        "untrusted repository's test suite, so a rebuild that silently changes it is a "
-        "supply-chain hole."
-    )
-
-    # A `RUN` that continues over a trailing backslash is one shell command; joining them
-    # is the only way to tell "same RUN" from "next layer".
     logical = re.sub(r"\\\n\s*", " ", text).splitlines()
-    install = [line for line in logical if "@anthropic-ai/claude-code@" in line]
-    assert len(install) == 1 and "claude --version" in install[0], (
-        "invariant 3: `claude --version` must close the SAME `RUN` that installs the CLI. "
-        "In a separate layer, a broken install stops being a failed build in front of "
-        f"whoever caused it and becomes a first task that dies with `claude: not found`. "
-        f"Got {install}"
+    install = [line for line in logical if "kiro-cli --version" in line]
+    assert install, (
+        "invariant 3: `kiro-cli --version` must run in the same RUN that installs the CLI."
     )
 
 
-def test_the_agent_image_carries_the_aipdlc_bundle_not_aws_docs_mcp() -> None:
+def test_the_agent_image_carries_no_baked_kiro_bundle() -> None:
     raw = (REPO_ROOT / _DOCKERFILE).read_text()
-    assert "COPY aipdlc" in raw and "AIPDLC_BUNDLE_PATH" in raw, (
-        f"{_DOCKERFILE} must bake the AIPDLC bundle for the harness plugin."
+    assert "COPY kiro-bundle" not in raw and "KIRO_BUNDLE_PATH" not in raw, (
+        f"{_DOCKERFILE} must not bake agents, skills or steering; those come from the target repo."
+    )
+    assert "COPY codeguard" not in raw and "CODEGUARD_PATH" not in raw, (
+        f"{_DOCKERFILE} must not bake a Codeguard bundle."
     )
     instructions = [
         line
@@ -418,12 +406,11 @@ def test_the_agent_image_carries_the_aipdlc_bundle_not_aws_docs_mcp() -> None:
     ]
     joined = "\n".join(instructions)
     assert "AWS_DOCS_MCP" not in joined and "aws-documentation-mcp" not in joined, (
-        "the image no longer installs the AWS documentation MCP server at build time; "
-        "git tools reach the fleet through AgentCore Gateway at runtime (GATEWAY_MCP_COMMAND)."
+        "the image must not install the AWS documentation MCP server at build time."
     )
-    options = (REPO_ROOT / "agent/src/coding_agent/options.py").read_text()
-    assert "GATEWAY_MCP_COMMAND" in options and "gateway" in options, (
-        "harness sessions must still wire the gateway MCP proxy from fleet environment."
+    profile = (REPO_ROOT / "agent/src/coding_agent/kiro_profile.py").read_text()
+    assert "gateway" in profile and "harness" in profile, (
+        "harness sessions must wire harness and gateway MCP servers in the Kiro agent profile."
     )
 
 
@@ -473,26 +460,20 @@ def test_the_agent_image_installs_nothing_from_a_moving_reference() -> None:
         )
 
 
-def test_the_agent_image_bakes_the_skills_and_sets_no_work_root() -> None:
+def test_the_agent_image_does_not_bake_kiro_content_and_sets_no_work_root() -> None:
     raw = (REPO_ROOT / _DOCKERFILE).read_text()
 
-    assert "COPY aipdlc" in raw and "AIPDLC_BUNDLE_PATH" in raw, (
-        f"{_DOCKERFILE} must bake the AIPDLC plugin bundle the harness loads at run time."
-    )
-    assert "COPY agent/aipdlc" not in raw, (
-        "the build context is `agent/`, so `COPY agent/aipdlc` resolves to "
-        "`agent/agent/aipdlc` and the first deploy dies on a missing path."
+    assert "COPY kiro-bundle" not in raw, (
+        f"{_DOCKERFILE} must not copy a kiro-bundle tree into the image."
     )
     assert "WORK_ROOT" not in raw, (
         "invariant 26: the image must set no work-root environment variable. A Dockerfile "
         "`ENV` cannot be *unset* by a runtime's `environmentVariables`, only overridden, so "
         "one added here for local convenience makes the runtime's value unremovable."
     )
-    for config_file in (".claude", "claude.json"):
-        assert config_file not in raw, (
-            f"invariant 10: {_DOCKERFILE} mentions {config_file!r}. A CLI configuration file "
-            "in the image loads REGARDLESS of `setting_sources=[]`, which makes it the one "
-            "file that can widen every role's session from inside the image."
+    for config_file in (".kiro/settings/mcp.json",):
+        assert f"COPY {config_file}" not in raw, (
+            f"invariant 10: {_DOCKERFILE} must not bake global Kiro MCP settings into the image."
         )
 
 

@@ -78,6 +78,94 @@ paths:
           description: Created
 """
 
+_JIRA_OPENAPI = """\
+openapi: 3.0.3
+info:
+  title: Jira Cloud API (minimal)
+  version: 0.0.1
+servers:
+  - url: https://api.atlassian.com
+paths:
+  /ex/jira/{cloudId}/rest/api/3/issue/{issueIdOrKey}:
+    get:
+      operationId: get_issue
+      parameters:
+        - name: cloudId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: issueIdOrKey
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /ex/jira/{cloudId}/rest/api/3/issue/{issueIdOrKey}/comment:
+    post:
+      operationId: add_comment
+      parameters:
+        - name: cloudId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: issueIdOrKey
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Created
+"""
+
+_CONFLUENCE_OPENAPI = """\
+openapi: 3.0.3
+info:
+  title: Confluence Cloud API (minimal)
+  version: 0.0.1
+servers:
+  - url: https://api.atlassian.com
+paths:
+  /wiki/api/v2/pages/{id}:
+    get:
+      operationId: get_page
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+"""
+
+_JENKINS_OPENAPI = """\
+openapi: 3.0.3
+info:
+  title: Jenkins API (minimal)
+  version: 0.0.1
+servers:
+  - url: https://jenkins.example.com
+paths:
+  /job/{job}/api/json:
+    get:
+      operationId: get_build_status
+      parameters:
+        - name: job
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+"""
+
 
 class GatewayStack(cdk.Stack):
     """Bedrock AgentCore Gateway with Git provider targets."""
@@ -117,6 +205,9 @@ class GatewayStack(cdk.Stack):
         for construct_id_suffix, target_name, schema in (
             ("GithubTarget", "github", _GITHUB_OPENAPI),
             ("BitbucketCloudTarget", "bitbucket-cloud", _BITBUCKET_OPENAPI),
+            ("JiraTarget", "jira", _JIRA_OPENAPI),
+            ("ConfluenceTarget", "confluence", _CONFLUENCE_OPENAPI),
+            ("JenkinsTarget", "jenkins", _JENKINS_OPENAPI),
         ):
             agentcore.CfnGatewayTarget(
                 self,

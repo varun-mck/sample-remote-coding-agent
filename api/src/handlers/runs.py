@@ -81,9 +81,11 @@ def queue_run(
     *,
     repository_url: str,
     prompt: str,
+    branch: str,
     base_branch: str = "",
     verify_command: str = "",
     setup_command: str = "",
+    team: str = "",
 ) -> dict[str, Any]:
     _allowed_repository(repository_url)
     screened = screen_prompt(prompt)
@@ -96,6 +98,7 @@ def queue_run(
         "taskId": task_id,
         "configId": FLEET_CONFIG_ID,
         "repositoryUrl": repository_url,
+        "branch": branch.strip(),
         "prompt": screened.text,
         "status": QUEUED,
         "createdAt": _common.now_iso(),
@@ -109,6 +112,8 @@ def queue_run(
         item["verifyCommand"] = verify_command
     if setup_command:
         item["setupCommand"] = setup_command
+    if team:
+        item["team"] = team
 
     _common.tasks_table.put_item(Item=item)
     _common.sqs.send_message(

@@ -124,8 +124,11 @@ un-namespaced `/remote` command does the same when present.
 
 ## Tasks
 
-- Submit with `submit_task` or `POST /tasks` with `repositoryUrl` and `prompt`.
-- Optional `baseBranch`, `verifyCommand`, and `setupCommand` override repository detection.
+- Submit with `submit_task` or `POST /tasks` with `repositoryUrl`, `branch`, and `prompt`.
+  `branch` must already exist on the remote; the harness checks it out and does not create
+  `agent/<taskId>`.
+- Optional `baseBranch` / `defaultBranch`, `verifyCommand`, and `setupCommand` override
+  repository detection.
 - Cancel with `POST /tasks/{taskId}/cancel` when a run is still active.
 - Tasks are refused when the repository host is not configured or not on the allowlist.
 
@@ -179,12 +182,7 @@ attaches a deny policy to the runtime execution role and the dispatcher role. Li
 
 ## Expected cost
 
-Idle infrastructure is roughly **$98–100/month** in us-east-1 with interface endpoints in one
-AZ (see `-c endpointAzCount=`). That includes S3 and DynamoDB *interface* endpoints (~$7.30
-each) alongside their free gateway endpoints, because accounts whose NACL guardrail strips
-public inbound rules drop every reply a gateway endpoint carries. The VPC always spans two AZs because AgentCore expects the
-runtime in at least two subnets; subnets are free, and the single NAT gateway and the
-endpoints stay in the first AZ, so the second AZ adds only inter-AZ data transfer
-($0.01/GB each way) for sessions placed there. `-c endpointAzCount=2` puts every
-interface endpoint in both AZs, about $58/month more. The $50 cap applies to Bedrock usage
-only, not the whole account.
+With **PUBLIC** network mode (no VPC, NAT, or interface endpoints), idle infrastructure is
+roughly **$15–25/month** in us-east-1 (DynamoDB, SQS, Lambda, one AgentCore runtime, ECR
+storage). Model spend is billed through **Kiro**; enable the legacy Bedrock budget stack only
+with `-c bedrockBudgetEnabled=true` when you still cap Guardrail-era Bedrock calls.

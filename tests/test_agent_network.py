@@ -344,11 +344,11 @@ def test_no_supported_zone_is_a_synth_failure_not_an_empty_list() -> None:
 
 
 def test_every_region_this_fleet_deploys_to_has_a_zone_table() -> None:
-    """README names the regions AgentCore Runtime V2 limits a deploy to. One missing from the
-    table fails every synth there with "does not list", which is right only if it is true."""
+    """README still documents AgentCore Runtime V2 regions (PUBLIC mode; table kept for tooling)."""
     readme = Path(__file__).resolve().parents[1].joinpath("README.md").read_text("utf-8")
-    (line,) = [chunk for chunk in readme.split("\n\n") if "AgentCore Runtime V2 only" in chunk]
-    regions = re.findall(r"`([a-z]{2}-[a-z]+-\d)`", line)
+    chunks = [chunk for chunk in readme.split("\n\n") if "AgentCore Runtime V2" in chunk]
+    assert chunks, "README's V2 region list moved; this test reads it"
+    regions = re.findall(r"`([a-z]{2}-[a-z]+-\d)`", chunks[0])
     assert regions, "README's V2 region list moved; this test reads it"
     assert set(regions) <= set(agent_stack.AGENTCORE_VPC_ZONE_IDS)
 

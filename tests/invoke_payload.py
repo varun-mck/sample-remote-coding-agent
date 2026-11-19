@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-REQUIRED: tuple[str, ...] = ("taskId", "prompt", "repositoryUrl")
+REQUIRED: tuple[str, ...] = ("taskId", "prompt", "repositoryUrl", "branch")
 OPTIONAL: tuple[str, ...] = (
     "defaultBranch",
     "verifyCommand",
@@ -19,6 +19,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "taskId": "tsk_1700000000000_abcdef",
         "prompt": "make the tests pass",
         "repositoryUrl": "https://github.com/acme/widgets",
+        "branch": "feature/agent-task",
         "defaultBranch": "main",
         "verifyCommand": "make test",
         "setupCommand": "make setup",

@@ -8,7 +8,7 @@ from typing import NamedTuple
 import aws_cdk
 from stacks import account_stack
 from stacks.account_stack import AccountStack
-from stacks.agent_stack import AgentStack, select_agent_zones
+from stacks.agent_stack import AgentStack
 from stacks.api_stack import ApiStack
 from stacks.data_stack import DataStack
 from stacks.gateway_stack import GatewayStack
@@ -73,33 +73,6 @@ def _flag_context(app: aws_cdk.App, key: str, *, default: bool) -> bool:
     return str(value).strip().lower() not in ("0", "false", "no", "off")
 
 
-def _endpoint_az_count(app: aws_cdk.App) -> int:
-    value = app.node.try_get_context("endpointAzCount")
-    if str(value).strip() == "2":
-        return 2
-    return 1
-
-
-def _agent_zones(app: aws_cdk.App, region: str | None) -> list[str]:
-    override = _context(app, "agentAvailabilityZones", "")
-    if override:
-        return [zone.strip() for zone in override.split(",") if zone.strip()]
-    if not region:
-        return []
-    import boto3
-
-    answer = boto3.client("ec2", region_name=region).describe_availability_zones(
-        Filters=[
-            {"Name": "zone-type", "Values": ["availability-zone"]},
-            {"Name": "state", "Values": ["available"]},
-        ]
-    )
-    return select_agent_zones(
-        region,
-        [(zone["ZoneName"], zone["ZoneId"]) for zone in answer["AvailabilityZones"]],
-    )
-
-
 def _guardrail_profile(app: aws_cdk.App, region: str | None) -> str | None:
     if not _flag_context(app, "guardrailEnabled", default=True):
         return None
@@ -126,14 +99,6 @@ def main() -> None:
         app,
         names.agent,
         app_name=APP_NAME,
-        alert_email=_context(app, "budgetAlertEmail", ""),
-        availability_zones=_agent_zones(app, region),
-        endpoint_az_count=_endpoint_az_count(app),
-        plan_model_id=_context(app, "planModelId", _DEFAULT_PLAN_MODEL),
-        code_model_id=_context(app, "codeModelId", _DEFAULT_CODE_MODEL),
-        haiku_model_id=_context(app, "haikuModelId", _DEFAULT_HAIKU_MODEL),
-        fallback_model_id=_context(app, "fallbackModelId", _DEFAULT_CODE_MODEL),
-        goal_enabled=_flag_context(app, "codeGoalEnabled", default=True),
         git_author_name=_context(app, "gitAuthorName", ""),
         git_author_email=_context(app, "gitAuthorEmail", ""),
         gateway_url=gateway.gateway_url,
@@ -153,18 +118,19 @@ def main() -> None:
         env=env,
     )
 
-    AccountStack(
-        app,
-        names.account,
-        app_name=APP_NAME,
-        monthly_budget_usd=_context(
-            app, "monthlyBudgetUsd", account_stack.DEFAULT_MONTHLY_BUDGET_USD
-        ),
-        alert_email=_context(app, "budgetAlertEmail", ""),
-        execution_role_arn=agent.execution_role.role_arn,
-        dispatcher_role_arn=api.dispatcher_role_arn,
-        env=aws_cdk.Environment(account=account_id, region=account_stack.BUDGET_REGION),
-    )
+    if _flag_context(app, "bedrockBudgetEnabled", default=False):
+        AccountStack(
+            app,
+            names.account,
+            app_name=APP_NAME,
+            monthly_budget_usd=_context(
+                app, "monthlyBudgetUsd", account_stack.DEFAULT_MONTHLY_BUDGET_USD
+            ),
+            alert_email=_context(app, "budgetAlertEmail", ""),
+            execution_role_arn=agent.execution_role.role_arn,
+            dispatcher_role_arn=api.dispatcher_role_arn,
+            env=aws_cdk.Environment(account=account_id, region=account_stack.BUDGET_REGION),
+        )
 
     app.synth()
 

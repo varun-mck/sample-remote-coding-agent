@@ -2,14 +2,7 @@
   "mcpServers": {
     "remote-coding-agent": {
       "command": "uv",
-      "args": [
-        "run",
-        "--python",
-        "3.12",
-        "--directory",
-        "mcp",
-        "rca-mcp"
-      ]
+      "args": ["run", "--directory", "mcp", "rca-mcp"]
     }
   }
 }

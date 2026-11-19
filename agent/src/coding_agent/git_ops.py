@@ -284,6 +284,25 @@ def create_branch(repo: Path, branch: str) -> None:
     _git(["checkout", "-b", branch], cwd=repo)
 
 
+def checkout_branch(repo: Path, branch: str) -> None:
+    """Check out an existing branch from `origin` (never creates a new branch name)."""
+    _git(
+        ["fetch", "--quiet", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"],
+        cwd=repo,
+    )
+    code, _, _ = _git(
+        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+        cwd=repo,
+        check=False,
+    )
+    if code != 0:
+        raise GitError(
+            f"branch {branch!r} was not found on origin after clone; "
+            "create the branch on the remote before submitting a task"
+        )
+    _git(["checkout", "-B", branch, f"origin/{branch}"], cwd=repo)
+
+
 def exclude_build_artifacts(repo: Path) -> None:
     """Add `BUILD_ARTIFACT_PATTERNS` to the clone's `.git/info/exclude`, once each.
 

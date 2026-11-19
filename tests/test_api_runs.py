@@ -30,6 +30,7 @@ def test_queue_run_writes_task_and_one_message(aws: Any) -> None:
     common, runs = _load("runs")
     task = runs.queue_run(
         repository_url="https://github.com/owner/repo",
+        branch="feature/work",
         prompt="add a healthcheck",
     )
     stored = common.tasks_table.get_item(Key={"taskId": task["taskId"]})["Item"]
@@ -41,7 +42,7 @@ def test_queue_run_writes_task_and_one_message(aws: Any) -> None:
 def test_queue_run_refuses_bad_repository_url(aws: Any) -> None:
     common, runs = _load("runs")
     with pytest.raises(common.ApiError) as raised:
-        runs.queue_run(repository_url="not-a-repo", prompt="p")
+        runs.queue_run(repository_url="not-a-repo", branch="main", prompt="p")
     assert raised.value.status == 400
     assert _messages(aws) == []
 

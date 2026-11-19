@@ -31,7 +31,9 @@ def _create_event(**body: Any) -> dict[str, Any]:
 
 def test_create_queues_a_task(aws: Any) -> None:
     common, tasks = _load("tasks")
-    out = tasks.create(_create_event(repositoryUrl="https://github.com/o/r", prompt="fix it"))
+    out = tasks.create(
+        _create_event(repositoryUrl="https://github.com/o/r", branch="feature/x", prompt="fix it")
+    )
     item = _body(out)
     assert out["statusCode"] == 201
     stored = common.tasks_table.get_item(Key={"taskId": item["taskId"]})["Item"]

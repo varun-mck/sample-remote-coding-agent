@@ -39,6 +39,7 @@ def submit_task(client: ApiClient, arguments: Mapping[str, Any]) -> str:
         "repositoryUrl": _required(arguments, "repositoryUrl"),
         "prompt": _required(arguments, "prompt"),
     }
+    body["branch"] = _required(arguments, "branch")
     for optional in ("verifyCommand", "setupCommand", "defaultBranch"):
         value = arguments.get(optional)
         if isinstance(value, str) and value.strip():
@@ -77,12 +78,13 @@ TOOLS: tuple[ToolSpec, ...] = (
             "type": "object",
             "properties": {
                 "repositoryUrl": {"type": "string"},
+                "branch": {"type": "string"},
                 "prompt": {"type": "string"},
                 "verifyCommand": {"type": "string"},
                 "setupCommand": {"type": "string"},
                 "defaultBranch": {"type": "string"},
             },
-            "required": ["repositoryUrl", "prompt"],
+            "required": ["repositoryUrl", "branch", "prompt"],
             "additionalProperties": False,
         },
         run=submit_task,

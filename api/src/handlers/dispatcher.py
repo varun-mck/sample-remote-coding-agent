@@ -70,6 +70,7 @@ def _payload(task: Mapping[str, Any]) -> dict[str, Any]:
         "taskId": str(task["taskId"]),
         "prompt": task.get("prompt", ""),
         "repositoryUrl": task.get("repositoryUrl", ""),
+        "branch": task.get("branch", ""),
         "defaultBranch": task.get("defaultBranch", ""),
         "verifyCommand": task.get("verifyCommand", ""),
         "setupCommand": task.get("setupCommand", ""),

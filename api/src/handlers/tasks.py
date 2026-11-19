@@ -25,14 +25,17 @@ def create(event: Mapping[str, Any]) -> tuple[int, Any]:
     body = _common.parse_body(event)
     repository_url = str(body.get("repositoryUrl") or "").strip()
     prompt = str(body.get("prompt") or "").strip()
-    if not repository_url or not prompt:
-        raise ApiError(400, "InvalidBody", "repositoryUrl and prompt are required")
+    branch = str(body.get("branch") or body.get("taskBranch") or "").strip()
+    if not repository_url or not prompt or not branch:
+        raise ApiError(400, "InvalidBody", "repositoryUrl, branch, and prompt are required")
     item = runs.queue_run(
         repository_url=repository_url,
         prompt=prompt,
+        branch=branch,
         base_branch=str(body.get("baseBranch") or body.get("defaultBranch") or "").strip(),
         verify_command=str(body.get("verifyCommand") or "").strip(),
         setup_command=str(body.get("setupCommand") or "").strip(),
+        team=_common.caller_team(event),
     )
     return 201, item
 
@@ -40,7 +43,11 @@ def create(event: Mapping[str, Any]) -> tuple[int, Any]:
 @handler
 def get(event: Mapping[str, Any]) -> tuple[int, Any]:
     task_id = _common.path_param(event, "taskId")
-    return 200, _task(task_id)
+    task = _task(task_id)
+    team = _common.caller_team(event)
+    if team and str(task.get("team") or "") not in ("", team):
+        raise _common.ApiError(404, "NotFound", "no task with that id", taskId=task_id)
+    return 200, task
 
 
 @handler
@@ -54,6 +61,9 @@ def list_(event: Mapping[str, Any]) -> tuple[int, Any]:
         scan_kwargs["FilterExpression"] = Attr("status").eq(status)
     page = _common.tasks_table.scan(**scan_kwargs)
     items = page.get("Items") or []
+    team = _common.caller_team(event)
+    if team:
+        items = [item for item in items if str(item.get("team") or "") in ("", team)]
     return 200, {"items": items, "nextCursor": None}
 
 

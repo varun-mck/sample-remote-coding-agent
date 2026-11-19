@@ -1,20 +1,31 @@
-"""Run one task: checkout, AIPDLC agent loop, record outcome."""
+"""Run one task: checkout, Kiro agent loop, record outcome."""
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
-
-from . import commands, config, credentials, git_ops, options, providers, store
+from . import commands, config, credentials, git_ops, providers, store
+from .kiro_runner import prepare_kiro_home, run_kiro
 from .state import TaskStatus
+from .state_file import load
 
 log = logging.getLogger(__name__)
 
 _FLEET_CONFIG_ID = "__fleet__"
+
+_DELIVER_INSTRUCTIONS = """\
+Complete the task using the harness workflow:
+1. Implement the requested changes.
+2. Call run_verification.
+3. Call publish_branch with a clear commit message.
+4. Call gateway create_pull_request with title and body summarizing the change.
+
+Never merge or approve pull requests. Never run git push or git remote from shell.
+"""
 
 
 def _detect_commands(repo: Path, payload: dict[str, Any]) -> tuple[str, str]:
@@ -28,53 +39,73 @@ def _detect_commands(repo: Path, payload: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _task_prompt(
+    payload: dict[str, Any], ref: providers.RepositoryRef, branch: str, base: str, verify: str
+) -> str:
+    body = str(payload.get("prompt") or "").strip()
+    return (
+        f"{_DELIVER_INSTRUCTIONS}\n\n"
+        f"Repository: {ref.url}\n"
+        f"Base branch: {base}\n"
+        f"Task branch: {branch}\n"
+        f"Verification command: {verify or '(none)'}\n\n"
+        f"{body}"
+    )
+
+
 async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = str(payload["taskId"])
-    prompt = str(payload.get("prompt") or "").strip()
     ref = providers.provider_from_payload(payload)
     cfg = config.load_config()
     work_dir = cfg.work_root / task_id
     repo_dir = work_dir / "repo"
-    branch = f"agent/{task_id}"
+    kiro_home = work_dir / "kiro_home"
+    state_path = work_dir / ".agent" / "state.json"
+    context_path = work_dir / ".agent" / "context.json"
+    branch = str(payload.get("branch") or payload.get("taskBranch") or "").strip()
+    if not branch:
+        raise ValueError(
+            "the invocation payload is missing branch (existing remote branch to check out)"
+        )
     base_branch = str(payload.get("defaultBranch") or payload.get("baseBranch") or "main")
 
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
 
     token = credentials.fetch_token(ref.provider)
     git_ops.clone(providers.clone_url(ref), repo_dir, token=token or None)
-    git_ops.create_branch(repo_dir, branch)
+    git_ops.checkout_branch(repo_dir, branch)
     git_ops.exclude_build_artifacts(repo_dir)
 
     setup_command, verify_command = _detect_commands(repo_dir, payload)
     if setup_command:
         commands.run_setup(setup_command, cwd=repo_dir)
 
-    from .task_context import TaskContext
-
-    task_ctx = TaskContext(
-        task_id=task_id,
-        prompt=prompt,
-        ref=ref,
-        work_dir=str(work_dir),
-        repo_dir=str(repo_dir),
-        branch=branch,
-        base_branch=base_branch,
-        verify_command=verify_command,
-        setup_command=setup_command,
+    context_path.write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "branch": branch,
+                "base_branch": base_branch,
+                "verify_command": verify_command,
+                "host": ref.provider.host,
+                "slug": ref.slug,
+                "owner": ref.owner,
+                "repo": ref.repo,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state_path.write_text(
+        json.dumps({"branch": branch, "verified": False, "published": False}, indent=2) + "\n",
+        encoding="utf-8",
     )
 
-    entry = cfg.entry_command
-    plugin = cfg.bundle_plugin_name
-    user_prompt = (
-        f"/{plugin}:{entry}\n\n"
-        f"Repository: {ref.url}\n"
-        f"Base branch: {base_branch}\n"
-        f"Task branch: {branch}\n"
-        f"Verification command: {verify_command or '(none)'}\n\n"
-        f"{prompt}"
-    )
+    prepare_kiro_home(kiro_home)
 
     store.set_status(
         {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
@@ -82,40 +113,60 @@ async def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         extra={"step": "deliver"},
     )
 
-    final_text = ""
-    async for message in query(
+    user_prompt = _task_prompt(payload, ref, branch, base_branch, verify_command)
+    result = run_kiro(
         prompt=user_prompt,
-        options=options.build_options(task_ctx, cwd=repo_dir),
-    ):
-        if isinstance(message, AssistantMessage):
-            joined = "\n".join(
-                block.text for block in message.content if isinstance(block, TextBlock)
-            )
-            if joined.strip():
-                final_text = joined
-        elif isinstance(message, ResultMessage) and message.result:
-            final_text = message.result
-
-    status: TaskStatus = (
-        "SUCCEEDED" if task_ctx.verified and task_ctx.pr_url else "SUCCEEDED_UNVERIFIED"
+        kiro_home=kiro_home,
+        state_path=state_path,
+        workspace=repo_dir,
+        context_path=context_path,
+        provider=ref.provider,
+        branch=branch,
+        base_branch=base_branch,
     )
-    if not task_ctx.pr_url:
-        status = "FAILED"
-        error = "the agent loop finished without opening a pull request"
+
+    final_state = load(state_path)
+    pr_url = str(final_state.get("pr_url") or "")
+    verified = bool(final_state.get("verified"))
+
+    if result.credits is not None:
         store.set_status(
             {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
-            status,
-            extra={"error": error},
+            "RUNNING",
+            extra={"kiroCredits": result.credits},
         )
-        return {"taskId": task_id, "status": status, "error": error}
 
-    if not task_ctx.verified and status != "FAILED":
-        status = "SUCCEEDED_UNVERIFIED"
+    if not result.success:
+        store.set_status(
+            {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
+            "FAILED",
+            extra={"error": result.error or "kiro run failed"},
+        )
+        return {"taskId": task_id, "status": "FAILED", "error": result.error}
 
+    if not pr_url:
+        store.set_status(
+            {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
+            "FAILED",
+            extra={"error": "the agent loop finished without opening a pull request"},
+        )
+        return {
+            "taskId": task_id,
+            "status": "FAILED",
+            "error": "the agent loop finished without opening a pull request",
+        }
+
+    status: TaskStatus = "SUCCEEDED" if verified and pr_url else "SUCCEEDED_UNVERIFIED"
     store.record_result(
         {"taskId": task_id, "configId": _FLEET_CONFIG_ID},
         status=status,
-        pr_url=task_ctx.pr_url,
-        verify_result=task_ctx.verification,
+        pr_url=pr_url,
+        verify_result=final_state.get("verification") or {},
     )
-    return {"taskId": task_id, "status": status, "prUrl": task_ctx.pr_url, "finalText": final_text}
+    return {
+        "taskId": task_id,
+        "status": status,
+        "prUrl": pr_url,
+        "finalText": result.final_text,
+        "kiroCredits": result.credits,
+    }

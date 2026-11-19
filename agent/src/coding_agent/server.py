@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
-_REQUIRED = ("taskId", "prompt")
+_REQUIRED = ("taskId", "prompt", "branch")
 _OPTIONAL_REPO = ("repositoryUrl", "repository")
 
 

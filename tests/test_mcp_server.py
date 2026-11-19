@@ -27,6 +27,8 @@ def test_tools_are_four() -> None:
 
 def test_submit_task_calls_post() -> None:
     text = call_tool(
-        _Stub(), "submit_task", {"repositoryUrl": "https://github.com/a/b", "prompt": "hi"}
+        _Stub(),
+        "submit_task",
+        {"repositoryUrl": "https://github.com/a/b", "branch": "feature/x", "prompt": "hi"},
     )
     assert "tsk_1" in text

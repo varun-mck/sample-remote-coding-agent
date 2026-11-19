@@ -1,19 +1,12 @@
 [project]
 name = "coding-agent"
-version = "0.1.0"
-description = "The AgentCore Runtime container: plan -> code -> verify -> review"
+version = "0.2.0"
+description = "AgentCore runtime: Kiro CLI harness for plan -> code -> verify -> PR"
 requires-python = ">=3.11"
 
-# Upper bounds at the next major on every line (invariant 29). `claude-agent-sdk`'s
-# range is narrower on purpose: 0.2.x is what keeps `"Task"` accepted in
-# ALLOWED_TOOLS after the upstream `Task` -> `Agent` rename. `botocore` is floored at
-# 1.43.0 because `bedrock-agentcore` needs a newer botocore than the Lambda runtime
-# ships (invariant 20).
 dependencies = [
-    "claude-agent-sdk>=0.2.0,<0.3.0",
+    "mcp>=1.2.0,<2",
     "bedrock-agentcore>=1.0,<2",
-    # 1.43.95 is the release that added `platformVersion` to the AgentCore
-    # control-plane calls; 1.43.94 does not have it (invariants 20 and 29).
     "boto3>=1.43.95,<2",
     "botocore>=1.43.95,<2",
 ]

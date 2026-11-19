@@ -623,6 +623,63 @@ def test_create_branch_is_idempotent(tmp_path: Path) -> None:
     assert git_ops.current_branch(repo) == "agent/t-1"
 
 
+def test_checkout_branch_tracks_origin(tmp_path: Path) -> None:
+    """Fleet tasks check out a branch that already exists on the remote."""
+    origin = make_git_repo(tmp_path / "origin")
+    bare = tmp_path / "remote.git"
+    env = os.environ | git_ops.git_config_env()
+    subprocess.run(["git", "init", "--bare", str(bare)], env=env, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(bare)],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "--quiet", "-u", "origin", "main"],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "--quiet", "-b", "feature/x"],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    (origin / "work.txt").write_text("change\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "work.txt"],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "feat"],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "--quiet", "-u", "origin", "feature/x"],
+        cwd=str(origin),
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+
+    clone_dest = tmp_path / "work" / "repo"
+    git_ops.clone(f"file://{bare}", clone_dest)
+    assert git_ops.current_branch(clone_dest) == "main"
+    git_ops.checkout_branch(clone_dest, "feature/x")
+    assert git_ops.current_branch(clone_dest) == "feature/x"
+
+
 def test_default_branch_falls_back_to_main(tmp_path: Path) -> None:
     """The base of a pull request, so a missing `origin/HEAD` must not be fatal.
 

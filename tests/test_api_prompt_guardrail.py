@@ -21,7 +21,7 @@ def test_a_deploy_without_a_guardrail_screens_nothing(
     monkeypatch.setenv("GUARDRAIL_ID", "")
     monkeypatch.setenv("GUARDRAIL_VERSION", "")
     _common, runs = _load("runs")
-    task = runs.queue_run(repository_url="https://github.com/o/r", prompt="hello")
+    task = runs.queue_run(repository_url="https://github.com/o/r", branch="main", prompt="hello")
     assert task["prompt"] == "hello"
 
 
@@ -33,5 +33,5 @@ def test_guardrail_refusal_blocks_queue(aws: Any, monkeypatch: pytest.MonkeyPatc
     _common, runs = _load("runs")
     install(monkeypatch, _common, guardrail=FakeGuardrail(blocked=blocked_by("topic", "topics")))
     with pytest.raises(_common.ApiError) as raised:
-        runs.queue_run(repository_url="https://github.com/o/r", prompt="blocked")
+        runs.queue_run(repository_url="https://github.com/o/r", branch="main", prompt="blocked")
     assert raised.value.status == 422

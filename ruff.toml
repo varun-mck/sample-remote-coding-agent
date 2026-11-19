@@ -58,3 +58,4 @@ max-complexity = 12
 "tests/*" = ["ARG001"]
 # CDK keyword arguments are camelCase because CloudFormation is.
 "infra/*" = ["N803", "N815"]
+"kiro-poc/*" = ["T201", "C901", "PLR0912"]
