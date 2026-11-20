@@ -1,4 +1,4 @@
-"""`GatewayStack` synthesizes a gateway and Git/Atlassian OpenAPI targets."""
+"""`GatewayStack` synthesizes a gateway, OpenAPI targets, and Confluence MCP."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import aws_cdk
 import pytest
 from aws_cdk.assertions import Template
-from stacks.gateway_stack import GatewayStack
+from stacks.gateway_stack import _ATLASSIAN_MCP_ENDPOINT, GatewayStack
 
 
 @pytest.fixture
@@ -57,15 +57,63 @@ def test_the_github_target_sends_the_pat_as_a_bearer_header(template: Template) 
     )
 
 
-def test_the_gateway_role_may_read_the_api_key(template: Template) -> None:
+def test_the_confluence_target_uses_atlassian_mcp_with_bearer_api_key(
+    template: Template,
+) -> None:
+    template.has_resource_properties(
+        "AWS::BedrockAgentCore::GatewayTarget",
+        {
+            "Name": "confluence",
+            "TargetConfiguration": {
+                "Mcp": {
+                    "McpServer": {
+                        "Endpoint": _ATLASSIAN_MCP_ENDPOINT,
+                        "ListingMode": "DEFAULT",
+                    }
+                }
+            },
+            "CredentialProviderConfigurations": [
+                {
+                    "CredentialProviderType": "API_KEY",
+                    "CredentialProvider": {
+                        "ApiKeyCredentialProvider": {
+                            "ProviderArn": (
+                                "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:"
+                                "token-vault/default/apikeycredentialprovider/rca_atlassian"
+                            ),
+                            "CredentialLocation": "HEADER",
+                            "CredentialParameterName": "Authorization",
+                            "CredentialPrefix": "Bearer",
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+
+def test_the_gateway_role_may_read_github_and_atlassian_api_keys(template: Template) -> None:
     policies = template.find_resources("AWS::IAM::Policy")
     actions: set[str] = set()
+    key_resources: set[str] = set()
     for policy in policies.values():
         for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
             action = statement["Action"]
             actions.update([action] if isinstance(action, str) else action)
+            resources = statement.get("Resource") or []
+            if isinstance(resources, str):
+                resources = [resources]
+            for resource in resources:
+                if "apikeycredentialprovider" in resource:
+                    key_resources.add(resource)
     assert {
         "bedrock-agentcore:GetWorkloadAccessToken",
         "bedrock-agentcore:GetResourceApiKey",
         "secretsmanager:GetSecretValue",
     } <= actions
+    assert {
+        "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:"
+        "token-vault/default/apikeycredentialprovider/rca_github",
+        "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:"
+        "token-vault/default/apikeycredentialprovider/rca_atlassian",
+    } <= key_resources

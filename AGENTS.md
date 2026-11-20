@@ -19,8 +19,6 @@ make lint
 | `api/` | Task API Lambdas |
 | `infra/` | CDK: Data, Runtime, Gateway, Api, TaskGateway, Account stacks |
 | `scripts/rca_cli.py` | Operator CLI (SigV4 to the task API) |
-| `scripts/render_power_mcp.py` | Renders `kiro-rca-power/mcp.json` from deploy outputs |
-| `kiro-rca-power/` | Kiro power: remote MCP (Cognito OAuth to the task gateway) and dispatch skill |
 
 ## Core invariants
 

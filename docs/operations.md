@@ -18,20 +18,19 @@ on Kiro's account default. `effort` is one of `low`, `medium`, `high`, `xhigh`, 
 
 Requires IAM permission to invoke the API function URL (`lambda:InvokeFunctionUrl`).
 
-## Submit from Kiro (power)
+## Submit over MCP (task gateway)
 
-`kiro-rca-power/` is a Kiro power that connects to the **task gateway** (`SampleCodingAgentTaskGateway`)
-over HTTPS. Kiro signs in through the Cognito hosted UI (email and password); there is no local
-MCP server and no AWS CLI profile.
+Connect any MCP client to the **task gateway** stack (`SampleCodingAgentTaskGateway`) over HTTPS
+using Cognito OAuth 2.0. There is no local MCP server in this repo for task submission.
 
 1. `make deploy EMAIL=you@example.com`
 2. Cognito console → user pool `rca-tasks` → **Create user**: username = work email, temporary
    password; mark email verified if asked.
-3. `make power` (renders `mcp.json` from `~/.rca/stack-outputs.json` and installs the power)
-4. In Kiro: connect **rca-fleet**, complete hosted UI login, set a permanent password on first login.
+3. From `~/.rca/stack-outputs.json` (or CloudFormation outputs): `TaskGatewayUrl`, `CognitoClientId`,
+   `CognitoDomain`, `OAuthScope` (`rca/tasks.submit`). Redirect URI: `http://localhost:7778/oauth/callback`.
 
 Tools are named `rca-tasks___submit_task`, `rca-tasks___get_task`, `rca-tasks___list_tasks`,
-`rca-tasks___cancel_task`. See [kiro-rca-power/README.md](../kiro-rca-power/README.md).
+`rca-tasks___cancel_task`.
 
 ## Poll status
 
@@ -60,14 +59,20 @@ Per-task debug files (on the runtime volume, not in git):
 
 Set `LOG_LEVEL=DEBUG` on the runtime for more harness logging.
 
-## AgentCore Gateway (GitHub PR tools)
+## AgentCore Gateway (GitHub, Confluence)
 
 The CDK stack deploys a minimal GitHub OpenAPI target and attaches the `rca_github` API-key
 provider to it as `Authorization: Bearer <PAT>`; the gateway role may read that key. The
-provider must exist before the gateway stack deploys. Git clone uses Identity; REST PR creation
-uses Gateway. If `github___create_pull_request` returns an internal error, check that the
-`github` target shows the credential provider in the console and read `detail=` lines in the
-per-task gateway bridge log tail in the runtime log stream.
+`confluence` target is Atlassian Rovo MCP (`mcp.atlassian.com/v2/mcp?tools=all`) with outbound
+`rca_atlassian` as `Authorization: Bearer <service-account API key>`. Both providers must exist
+in AgentCore Identity before the gateway stack deploys. Git clone uses Identity; REST PR creation
+and Confluence MCP use Gateway. If `github___create_pull_request` or `confluence___*` returns an
+internal error, check that the target shows the credential provider in the console and read
+`detail=` lines in the per-task gateway bridge log tail in the runtime log stream.
+
+`rca_atlassian` must hold a **service-account** API key (raw secret, no `Bearer ` prefix). Personal
+API tokens need Basic auth and will not work on this target. Atlassian admins must allow API-token
+authentication on the MCP server.
 
 ## GitHub credential
 

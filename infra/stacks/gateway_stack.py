@@ -1,4 +1,4 @@
-"""AgentCore Gateway: one gateway and OpenAPI-backed targets per Git host provider."""
+"""AgentCore Gateway: Git/Atlassian OpenAPI targets and Atlassian Rovo MCP for Confluence."""
 
 from __future__ import annotations
 
@@ -160,27 +160,7 @@ paths:
           description: Created
 """
 
-_CONFLUENCE_OPENAPI = """\
-openapi: 3.0.3
-info:
-  title: Confluence Cloud API (minimal)
-  version: 0.0.1
-servers:
-  - url: https://api.atlassian.com
-paths:
-  /wiki/api/v2/pages/{id}:
-    get:
-      operationId: get_page
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: OK
-"""
+_ATLASSIAN_MCP_ENDPOINT = "https://mcp.atlassian.com/v2/mcp?tools=all"
 
 _JENKINS_OPENAPI = """\
 openapi: 3.0.3
@@ -206,7 +186,7 @@ paths:
 
 
 class GatewayStack(cdk.Stack):
-    """Bedrock AgentCore Gateway with Git provider targets."""
+    """Bedrock AgentCore Gateway with Git and Atlassian tool targets."""
 
     def __init__(
         self, scope: Construct, construct_id: str, *, app_name: str, **kwargs: Any
@@ -233,9 +213,14 @@ class GatewayStack(cdk.Stack):
 
         # The PAT behind `{app_name}_github` is the one git already uses; created outside CDK.
         github_provider = f"{app_name}_github"
+        atlassian_provider = f"{app_name}_atlassian"
         github_provider_arn = (
             f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:token-vault/default/"
             f"apikeycredentialprovider/{github_provider}"
+        )
+        atlassian_provider_arn = (
+            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:token-vault/default/"
+            f"apikeycredentialprovider/{atlassian_provider}"
         )
         # Outbound API-key auth: the gateway exchanges its own workload token for the key, and
         # Identity reads the key's secret with the gateway role's credentials.
@@ -250,6 +235,7 @@ class GatewayStack(cdk.Stack):
                     f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:workload-identity-directory/default/workload-identity/*",
                     f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:token-vault/default",
                     github_provider_arn,
+                    atlassian_provider_arn,
                 ],
             )
         )
@@ -268,28 +254,31 @@ class GatewayStack(cdk.Stack):
             name=f"{app_name}-gateway",
             authorizer_type="AWS_IAM",
             role_arn=gateway_role.role_arn,
-            description=f"{app_name} MCP gateway for Git provider tools",
+            description=f"{app_name} MCP gateway for Git and Atlassian tools",
         )
 
-        github_auth = [
-            agentcore.CfnGatewayTarget.CredentialProviderConfigurationProperty(
-                credential_provider_type="API_KEY",
-                credential_provider=agentcore.CfnGatewayTarget.CredentialProviderProperty(
-                    api_key_credential_provider=agentcore.CfnGatewayTarget.ApiKeyCredentialProviderProperty(
-                        provider_arn=github_provider_arn,
-                        credential_location="HEADER",
-                        credential_parameter_name="Authorization",
-                        credential_prefix="Bearer",
-                    )
-                ),
-            )
-        ]
+        def _bearer_api_key_auth(provider_arn: str) -> list[Any]:
+            return [
+                agentcore.CfnGatewayTarget.CredentialProviderConfigurationProperty(
+                    credential_provider_type="API_KEY",
+                    credential_provider=agentcore.CfnGatewayTarget.CredentialProviderProperty(
+                        api_key_credential_provider=agentcore.CfnGatewayTarget.ApiKeyCredentialProviderProperty(
+                            provider_arn=provider_arn,
+                            credential_location="HEADER",
+                            credential_parameter_name="Authorization",
+                            credential_prefix="Bearer",
+                        )
+                    ),
+                )
+            ]
+
+        github_auth = _bearer_api_key_auth(github_provider_arn)
+        atlassian_auth = _bearer_api_key_auth(atlassian_provider_arn)
 
         for construct_id_suffix, target_name, schema, auth in (
             ("GithubTarget", "github", _GITHUB_OPENAPI, github_auth),
             ("BitbucketCloudTarget", "bitbucket-cloud", _BITBUCKET_OPENAPI, None),
             ("JiraTarget", "jira", _JIRA_OPENAPI, None),
-            ("ConfluenceTarget", "confluence", _CONFLUENCE_OPENAPI, None),
             ("JenkinsTarget", "jenkins", _JENKINS_OPENAPI, None),
         ):
             target = agentcore.CfnGatewayTarget(
@@ -309,6 +298,24 @@ class GatewayStack(cdk.Stack):
             )
             # The role's Identity grants must exist before the target validates its auth.
             target.node.add_dependency(gateway_role)
+
+        confluence_mcp = agentcore.CfnGatewayTarget(
+            self,
+            "ConfluenceMcpTarget",
+            gateway_identifier=gateway.attr_gateway_identifier,
+            name="confluence",
+            description="Atlassian Rovo MCP (Confluence tools via service-account API key)",
+            target_configuration=agentcore.CfnGatewayTarget.TargetConfigurationProperty(
+                mcp=agentcore.CfnGatewayTarget.McpTargetConfigurationProperty(
+                    mcp_server=agentcore.CfnGatewayTarget.McpServerTargetConfigurationProperty(
+                        endpoint=_ATLASSIAN_MCP_ENDPOINT,
+                        listing_mode="DEFAULT",
+                    )
+                )
+            ),
+            credential_provider_configurations=atlassian_auth,
+        )
+        confluence_mcp.node.add_dependency(gateway_role)
 
         self.gateway_url: str = gateway.attr_gateway_url
         self.gateway_arn: str = gateway.attr_gateway_arn

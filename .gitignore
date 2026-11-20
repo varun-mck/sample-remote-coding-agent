@@ -28,5 +28,3 @@ infra/cdk.context.json
 .agent/
 .agent.repo/
 
-# Rendered by `make power` from deploy outputs; contains the live gateway URL.
-kiro-rca-power/mcp.json

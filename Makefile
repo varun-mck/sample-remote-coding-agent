@@ -14,7 +14,7 @@ ACCOUNT_STACK = $(STACK_PREFIX)Account
 DATA_STACK = $(STACK_PREFIX)Data
 TASK_GATEWAY_STACK = $(STACK_PREFIX)TaskGateway
 
-.PHONY: setup test lint preflight deploy budget-reset task task-get task-list power
+.PHONY: setup test lint preflight deploy budget-reset task task-get task-list
 
 setup:
 	test -x .venv/bin/pip || python3 -m venv --system-site-packages "$$(cd .venv 2>/dev/null && pwd -P || echo .venv)"
@@ -79,7 +79,3 @@ task-get:
 
 task-list:
 	@$(PYTHON) scripts/rca_cli.py list
-
-power:
-	@$(PYTHON) scripts/render_power_mcp.py --outputs "$(OUTPUTS)"
-	@kiro-cli powers install "$(CURDIR)/kiro-rca-power"

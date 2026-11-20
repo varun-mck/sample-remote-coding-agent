@@ -70,7 +70,6 @@ def test_the_makefile_declares_operator_targets() -> None:
         "task",
         "task-get",
         "task-list",
-        "power",
     }
     assert required.issubset(declared), f"missing targets: {sorted(required - declared)}"
 
