@@ -44,6 +44,19 @@ def test_create_queues_a_task(aws: Any) -> None:
     assert bodies == [{"taskId": item["taskId"]}]
 
 
+def test_create_stores_submitted_by_from_gateway(aws: Any) -> None:
+    common, tasks = _load("tasks")
+    event = _create_event(repositoryUrl="https://github.com/o/r", branch="feature/x", prompt="fix")
+    event["requestContext"] = {
+        **event.get("requestContext", {}),
+        "authorizer": {"gateway": {"submittedBy": "dev@example.com"}},
+    }
+    out = tasks.create(event)
+    assert out["statusCode"] == 201
+    stored = common.tasks_table.get_item(Key={"taskId": _body(out)["taskId"]})["Item"]
+    assert stored["submittedBy"] == "dev@example.com"
+
+
 def test_create_refuses_missing_fields(aws: Any) -> None:
     _common, tasks = _load("tasks")
     out = tasks.create(_create_event(prompt="only prompt"))

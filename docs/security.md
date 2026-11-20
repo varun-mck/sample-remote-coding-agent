@@ -5,7 +5,10 @@
 - Git tokens flow only through `GIT_ASKPASS` (`git_ops._askpass`); they are not logged or
   placed in environment variables for the Kiro process beyond the askpass script lifetime.
 - Kiro API key: Secrets Manager `rca/kiro-api-key` (or `KIRO_API_KEY` for local dev only).
-- Task API: IAM SigV4 on the Lambda function URL; no API keys in requests.
+- Task API (engineers): IAM SigV4 on the Lambda function URL; no API keys in requests.
+- Task gateway (Kiro power): Cognito access tokens verified by AgentCore Gateway (`CUSTOM_JWT`).
+  A request interceptor stamps `submittedBy` from the token; clients cannot supply it. The MCP
+  adapter forwards only calls from this deployment's gateway id to the route Lambdas.
 
 ## Agent capabilities
 

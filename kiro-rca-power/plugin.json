@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "rca-fleet",
   "version": "0.1.0",
-  "description": "Dispatch and track tasks on the remote coding agent fleet (AgentCore runtime running Kiro) through its IAM-signed task API.",
+  "description": "Dispatch and track tasks on the remote coding agent fleet through the Cognito-backed AgentCore task gateway (HTTPS MCP).",
   "author": {
     "name": "sample-remote-coding-agent"
   },

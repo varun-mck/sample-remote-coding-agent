@@ -20,17 +20,18 @@ Requires IAM permission to invoke the API function URL (`lambda:InvokeFunctionUr
 
 ## Submit from Kiro (power)
 
-`kiro-rca-power/` is a Kiro power: an MCP server with `submit_task`, `get_task`,
-`list_tasks` and `cancel_task`, plus a skill. It signs requests with SigV4 (service `lambda`)
-using your AWS credential chain in-process, so no CLI is involved.
+`kiro-rca-power/` is a Kiro power that connects to the **task gateway** (`SampleCodingAgentTaskGateway`)
+over HTTPS. Kiro signs in through the Cognito hosted UI (email and password); there is no local
+MCP server and no AWS CLI profile.
 
-```bash
-kiro-cli powers install "$PWD/kiro-rca-power"
-```
+1. `make deploy EMAIL=you@example.com`
+2. Cognito console → user pool `rca-tasks` → **Create user**: username = work email, temporary
+   password; mark email verified if asked.
+3. `make power` (renders `mcp.json` from `~/.rca/stack-outputs.json` and installs the power)
+4. In Kiro: connect **rca-fleet**, complete hosted UI login, set a permanent password on first login.
 
-It reads `~/.rca/endpoint.json` (written by `make deploy`). Write `~/.rca/power.json` with
-`apiUrl`, `region` or `profile` to override. Requires `uv`. See
-[kiro-rca-power/README.md](../kiro-rca-power/README.md).
+Tools are named `rca-tasks___submit_task`, `rca-tasks___get_task`, `rca-tasks___list_tasks`,
+`rca-tasks___cancel_task`. See [kiro-rca-power/README.md](../kiro-rca-power/README.md).
 
 ## Poll status
 

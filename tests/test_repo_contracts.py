@@ -25,7 +25,6 @@ _MANIFESTS = [
     "api/requirements.txt",
     "infra/requirements.txt",
     "agent/pyproject.toml",
-    "kiro-rca-power/pyproject.toml",
 ]
 
 # `agent/Dockerfile` is deliberately NOT a sixth manifest: `_declared_requirements` parses
@@ -71,6 +70,7 @@ def test_the_makefile_declares_operator_targets() -> None:
         "task",
         "task-get",
         "task-list",
+        "power",
     }
     assert required.issubset(declared), f"missing targets: {sorted(required - declared)}"
 
@@ -153,7 +153,7 @@ def test_pytest_ini_keeps_the_loadfile_distribution() -> None:
         "api/src",
         "tests",
         "infra",
-        "kiro-rca-power/src",
+        "scripts",
     ]
 
 

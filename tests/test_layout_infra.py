@@ -1,5 +1,5 @@
 """`infra/` is a CDK app: `stacks` is a namespace package, `app.py` is inert on import, and
-its five stack names all hang off one prefix."""
+its six stack names all hang off one prefix."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def test_the_cdk_entry_point_imports_without_building_an_app() -> None:
     assert not (REPO_ROOT / "cdk.out").exists()
 
 
-def test_the_five_stack_names_share_the_default_prefix() -> None:
+def test_the_six_stack_names_share_the_default_prefix() -> None:
     assert app.DEFAULT_STACK_PREFIX == "SampleCodingAgent"
     assert app.stack_names() == (
         app.ACCOUNT_STACK_NAME,
@@ -31,14 +31,23 @@ def test_the_five_stack_names_share_the_default_prefix() -> None:
         app.AGENT_STACK_NAME,
         app.GATEWAY_STACK_NAME,
         app.API_STACK_NAME,
+        app.TASK_GATEWAY_STACK_NAME,
     )
     assert app.API_STACK_NAME == "SampleCodingAgentApi"
+    assert app.TASK_GATEWAY_STACK_NAME == "SampleCodingAgentTaskGateway"
 
 
-def test_the_stack_prefix_renames_all_five_stacks() -> None:
+def test_the_stack_prefix_renames_all_six_stacks() -> None:
     names = app.stack_names("Foo")
-    assert names == ("FooAccount", "FooData", "FooRuntime", "FooGateway", "FooApi")
-    assert len(set(names)) == 5
+    assert names == (
+        "FooAccount",
+        "FooData",
+        "FooRuntime",
+        "FooGateway",
+        "FooApi",
+        "FooTaskGateway",
+    )
+    assert len(set(names)) == 6
 
 
 def test_the_account_stack_is_one_per_consuming_region() -> None:

@@ -2,11 +2,16 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "rca-fleet": {
-      "type": "stdio",
-      "command": "./bin/rca-power",
-      "env": {
-        "RCA_POWER_DATA": "${PLUGIN_DATA}"
-      }
+      "url": "https://rca-task-gateway-mfdujnzmgk.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+      "oauth": {
+        "clientId": "1t1sjp9vk6i40dv9187uj6fpql",
+        "redirectUri": "http://localhost:7778/oauth/callback"
+      },
+      "oauthScopes": [
+        "openid",
+        "email",
+        "rca/tasks.submit"
+      ]
     }
   }
 }

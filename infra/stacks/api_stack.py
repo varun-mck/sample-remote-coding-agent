@@ -80,6 +80,24 @@ def _common_environment(
     }
 
 
+def api_code() -> lambda_.Code:
+    """The `api/` bundle every handler Lambda runs. A fresh `Code` per stack: an asset
+    binds to the first stack that uses it."""
+    return lambda_.Code.from_asset(
+        str(Path(__file__).resolve().parents[2] / "api"),
+        bundling=cdk.BundlingOptions(
+            image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+            platform="linux/arm64",
+            command=[
+                "bash",
+                "-c",
+                "pip install --no-cache-dir -r requirements.txt -t /asset-output "
+                "&& cp -r src/. /asset-output",
+            ],
+        ),
+    )
+
+
 def _construct_id(module: str, function: str) -> str:
     return "".join(part.title() for part in f"{module}_{function}".strip("_").split("_"))
 
@@ -108,20 +126,7 @@ class ApiStack(cdk.Stack):
             else None
         )
 
-        code = lambda_.Code.from_asset(
-            str(Path(__file__).resolve().parents[2] / "api"),
-            bundling=cdk.BundlingOptions(
-                image=lambda_.Runtime.PYTHON_3_12.bundling_image,
-                platform="linux/arm64",
-                command=[
-                    "bash",
-                    "-c",
-                    "pip install --no-cache-dir -r requirements.txt -t /asset-output "
-                    "&& cp -r src/. /asset-output",
-                ],
-            ),
-        )
-        self._code = code
+        self._code = api_code()
         common = _common_environment(
             data, self._guardrail, agent_runtime_arn=agent.agent_runtime_arn
         )

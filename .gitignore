@@ -27,3 +27,6 @@ infra/cdk.context.json
 # leaving a repository's own `.agent/` in place to be read as this task's state.
 .agent/
 .agent.repo/
+
+# Rendered by `make power` from deploy outputs; contains the live gateway URL.
+kiro-rca-power/mcp.json

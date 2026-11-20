@@ -73,6 +73,20 @@ def caller_team(event: Mapping[str, Any]) -> str:
     return ""
 
 
+def caller_id(event: Mapping[str, Any]) -> str:
+    """Who submitted: Cognito username from the task gateway, else the SigV4 caller ARN.
+
+    Only `mcp_adapter` sets `authorizer.gateway`; a function URL request cannot forge it.
+    """
+    auth = (event.get("requestContext") or {}).get("authorizer") or {}
+    gateway = auth.get("gateway") or {}
+    submitted_by = gateway.get("submittedBy")
+    if isinstance(submitted_by, str) and submitted_by.strip():
+        return submitted_by.strip()
+    user_arn = (auth.get("iam") or {}).get("userArn")
+    return user_arn.strip() if isinstance(user_arn, str) else ""
+
+
 @functools.lru_cache(maxsize=1)
 def agentcore_control() -> Any:
     """The AgentCore *control* plane: Create/Get/Update/DeleteAgentRuntime.

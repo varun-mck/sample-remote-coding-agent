@@ -38,6 +38,7 @@ def create(event: Mapping[str, Any]) -> tuple[int, Any]:
         model=str(body.get("model") or "").strip(),
         effort=str(body.get("effort") or "").strip().lower(),
         team=_common.caller_team(event),
+        submitted_by=_common.caller_id(event),
     )
     return 201, item
 

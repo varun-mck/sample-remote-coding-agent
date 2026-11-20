@@ -5,8 +5,8 @@ description: Dispatch a task to the remote coding agent fleet and follow it to a
 
 # Dispatch a remote coding agent task
 
-The `rca-fleet` MCP tools talk to the fleet's task API. They sign every request with the
-operator's own AWS credentials, so there is nothing to log in to from here.
+The `rca-fleet` MCP server is the fleet's **task gateway**. Kiro signs in with Cognito when
+the connection starts; you do not pass AWS credentials or a `submittedBy` field.
 
 ## Step 1: Confirm the inputs
 
@@ -23,13 +23,13 @@ Ask the user for anything missing rather than guessing a repository or branch.
 
 ## Step 2: Submit
 
-Call `submit_task`. Keep the returned `taskId` and repeat it to the user.
+Call `rca-tasks___submit_task`. Keep the returned `taskId` and repeat it to the user.
 
 ## Step 3: Follow it
 
-Call `get_task` with the `taskId`. If the user asked you to monitor, poll about every 30
-seconds until the status is `SUCCEEDED`, `FAILED` or `CANCELLED`. A typical run takes one to
-five minutes.
+Call `rca-tasks___get_task` with the `taskId`. If the user asked you to monitor, poll about
+every 30 seconds until the status is `SUCCEEDED`, `FAILED` or `CANCELLED`. A typical run
+takes one to five minutes.
 
 `QUEUED`, `DISPATCHED` and `RUNNING` are in flight. `steps` lists the harness steps reached
 so far, ending in `record-result` once the outcome is stored.
@@ -45,8 +45,8 @@ so far, ending in `record-result` once the outcome is stored.
 ## Rules
 
 - Never ask for, accept or forward a GitHub token or any other credential. Repository
-  credentials live in AgentCore Identity; AWS credentials come from the operator's profile.
-- Use `cancel_task` only when the user asks to stop a task.
-- If the tools fail with a configuration or credential error, relay the message: it names
-  the fix (`make deploy`, `~/.rca/power.json`, or refreshing AWS credentials). `make task`
-  in the repository is a fallback only when the MCP server itself will not start.
+  credentials live in AgentCore Identity.
+- Use `rca-tasks___cancel_task` only when the user asks to stop a task.
+- If the tools fail with a sign-in error, ask the user to reconnect the `rca-fleet` server in
+  Kiro (Cognito hosted UI). `make task` in the repository is a fallback only for engineers
+  with an AWS CLI profile.

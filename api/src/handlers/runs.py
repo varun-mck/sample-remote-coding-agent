@@ -104,6 +104,7 @@ def queue_run(
     model: str = "",
     effort: str = "",
     team: str = "",
+    submitted_by: str = "",
 ) -> dict[str, Any]:
     _allowed_repository(repository_url)
     _valid_model_and_effort(model, effort)
@@ -137,6 +138,8 @@ def queue_run(
         item["effort"] = effort
     if team:
         item["team"] = team
+    if submitted_by:
+        item["submittedBy"] = submitted_by
 
     _common.tasks_table.put_item(Item=item)
     _common.sqs.send_message(

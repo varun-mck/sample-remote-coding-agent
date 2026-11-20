@@ -12,24 +12,24 @@ AGENT_STACK = $(STACK_PREFIX)Runtime
 GATEWAY_STACK = $(STACK_PREFIX)Gateway
 ACCOUNT_STACK = $(STACK_PREFIX)Account
 DATA_STACK = $(STACK_PREFIX)Data
+TASK_GATEWAY_STACK = $(STACK_PREFIX)TaskGateway
 
-.PHONY: setup test lint preflight deploy budget-reset task task-get task-list
+.PHONY: setup test lint preflight deploy budget-reset task task-get task-list power
 
 setup:
 	test -x .venv/bin/pip || python3 -m venv --system-site-packages "$$(cd .venv 2>/dev/null && pwd -P || echo .venv)"
 	.venv/bin/python -m pip install --quiet --no-cache-dir --upgrade pip
 	.venv/bin/python -m pip install --quiet --no-cache-dir -r requirements-dev.txt
 	.venv/bin/python -m pip install --quiet --no-cache-dir -e ./agent
-	.venv/bin/python -m pip install --quiet --no-cache-dir -e ./kiro-rca-power
 	.venv/bin/python -m pip install --quiet --no-cache-dir -r api/requirements.txt -r infra/requirements.txt
 
 test:
 	$(PYTHON) -m pytest -q
 
 lint:
-	$(PYTHON) -m ruff check agent/src api/src infra tests scripts kiro-rca-power/src
-	$(PYTHON) -m ruff format --check agent/src api/src infra tests scripts kiro-rca-power/src
-	$(PYTHON) -m mypy --config-file mypy.ini agent/src api/src infra kiro-rca-power/src
+	$(PYTHON) -m ruff check agent/src api/src infra tests scripts
+	$(PYTHON) -m ruff format --check agent/src api/src infra tests scripts
+	$(PYTHON) -m mypy --config-file mypy.ini agent/src api/src infra scripts
 
 preflight:
 	@test -x .venv/bin/python || { echo "run make setup first"; exit 1; }
@@ -79,3 +79,7 @@ task-get:
 
 task-list:
 	@$(PYTHON) scripts/rca_cli.py list
+
+power:
+	@$(PYTHON) scripts/render_power_mcp.py --outputs "$(OUTPUTS)"
+	@kiro-cli powers install "$(CURDIR)/kiro-rca-power"

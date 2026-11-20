@@ -1,4 +1,4 @@
-"""CDK entry point: Data, Agent, Gateway, Api and Account stacks."""
+"""CDK entry point: Data, Agent, Gateway, Api, TaskGateway and Account stacks."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from stacks.api_stack import ApiStack
 from stacks.data_stack import DataStack
 from stacks.gateway_stack import GatewayStack
 from stacks.prompt_guardrail import guardrail_profile_for
+from stacks.task_gateway_stack import TaskGatewayStack
 
 APP_NAME = "rca"
 DEFAULT_STACK_PREFIX = "SampleCodingAgent"
@@ -24,6 +25,7 @@ class StackNames(NamedTuple):
     agent: str
     gateway: str
     api: str
+    task_gateway: str
 
 
 _REGION_WORD = re.compile(r"[A-Za-z0-9]+")
@@ -44,6 +46,7 @@ def stack_names(prefix: str = DEFAULT_STACK_PREFIX, region: str | None = None) -
         agent=f"{prefix}Runtime",
         gateway=f"{prefix}Gateway",
         api=f"{prefix}Api",
+        task_gateway=f"{prefix}TaskGateway",
     )
 
 
@@ -53,6 +56,7 @@ DATA_STACK_NAME = _DEFAULT_NAMES.data
 AGENT_STACK_NAME = _DEFAULT_NAMES.agent
 GATEWAY_STACK_NAME = _DEFAULT_NAMES.gateway
 API_STACK_NAME = _DEFAULT_NAMES.api
+TASK_GATEWAY_STACK_NAME = _DEFAULT_NAMES.task_gateway
 
 
 def _context(app: aws_cdk.App, key: str, default: str) -> str:
@@ -112,6 +116,15 @@ def main() -> None:
         data=data,
         agent=agent,
         guardrail_profile_id=_guardrail_profile(app, region),
+        env=env,
+    )
+
+    TaskGatewayStack(
+        app,
+        names.task_gateway,
+        app_name=APP_NAME,
+        route_arns=api.handler_arns,
+        cognito_domain_prefix=_context(app, "cognitoDomainPrefix", ""),
         env=env,
     )
 
